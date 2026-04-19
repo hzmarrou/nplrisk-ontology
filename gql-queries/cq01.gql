@@ -1,0 +1,4 @@
+// CQ1: How many entity nodes are loaded in the graph?
+// Sanity check: sums nodes across all entity types after a refresh.
+MATCH (n)
+RETURN COUNT(n) AS total_nodes;

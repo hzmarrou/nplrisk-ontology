@@ -1,0 +1,7 @@
+// CQ7: For each collection agent, what is the total cash recovered through them?
+// Tests: ExternalCollection -> CollectionAgent edge + numeric aggregation.
+MATCH (ec:`ExternalCollection`)-[:`collection_is_undertaken_by`]->(ca:`CollectionAgent`)
+RETURN ca.legal_name AS agent_name,
+       SUM(ec.cash_recoveries) AS total_recoveries
+GROUP BY agent_name
+ORDER BY total_recoveries DESC;

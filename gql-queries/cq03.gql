@@ -1,0 +1,5 @@
+// CQ3: How many distinct borrowers are linked to non-performing loans?
+// Tests: edge traversal Loan <- has_borrower -> Borrower with a property filter.
+MATCH (l:`Loan`)-[:`has_borrower`]->(b:`Borrower`)
+WHERE l.is_non_performing = true
+RETURN COUNT(DISTINCT b.borrower_id) AS npe_borrower_count;

@@ -1,0 +1,7 @@
+// CQ5: How many forbearance events per borrower country of residence?
+// Tests: Forbearance -> Borrower edge with a group-by on a borrower property.
+MATCH (f:`Forbearance`)-[:`forbearance_concerns_borrower`]->(b:`Borrower`)
+RETURN b.country_of_residence AS country_of_residence,
+       COUNT(f) AS forbearance_count
+GROUP BY country_of_residence
+ORDER BY forbearance_count DESC;

@@ -1,0 +1,6 @@
+// CQ2: How many borrowers are in each borrower_type category?
+// Tests: single-entity aggregation with GROUP BY on a discriminator column.
+MATCH (b:`Borrower`)
+RETURN b.borrower_type AS borrower_type, COUNT(b) AS borrower_count
+GROUP BY borrower_type
+ORDER BY borrower_count DESC;

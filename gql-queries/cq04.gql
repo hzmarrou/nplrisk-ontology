@@ -1,0 +1,9 @@
+// CQ4: For loans secured by property, return the loan id, property city, and latest valuation.
+// Tests: 3-hop traversal Loan -> Collateral -> PropertyCollateral.
+MATCH (l:`Loan`)<-[:`collateral_concerns_loan`]-(c:`Collateral`)
+MATCH (pc:`PropertyCollateral`)-[:`property_collateral_references_collateral`]->(c)
+RETURN l.loan_id AS loan_id,
+       pc.city AS city,
+       pc.country_code AS country_code,
+       c.latest_valuation_amount AS latest_valuation_amount
+LIMIT 25;

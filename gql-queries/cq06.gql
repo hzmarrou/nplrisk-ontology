@@ -1,0 +1,8 @@
+// CQ6: For each counterparty group, how many loans are held by member borrowers?
+// Tests: 3-hop traversal CounterpartyGroup -> Borrower -> Loan via cp_is_part_of_group + has_borrowed_loan.
+MATCH (g:`CounterpartyGroup`)<-[:`cp_is_part_of_group`]-(b:`Borrower`)
+MATCH (b)-[:`has_borrowed_loan`]->(l:`Loan`)
+RETURN g.group_name AS group_name,
+       COUNT(DISTINCT l.loan_id) AS loan_count
+GROUP BY group_name
+ORDER BY loan_count DESC;
