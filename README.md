@@ -13,14 +13,22 @@ on a curated scenario benchmark.
 
 - A real OWL/RDF ontology (NPLO — Non Performing Loan Ontology, aligned
   to EBA NPL Data Templates) parsed into a Fabric ontology
-- 12 entities, 10–14 relationships, 14 Lakehouse Delta tables, populated
+- 12 entities, 13 relationships, 14 Lakehouse Delta tables, populated
   from ~7.6 k rows of realistic sample data
-- Live GQL competency-query validation
-- Two provisioned Fabric Data Agents: `NakedAgent` (lakehouse only) and
-  `OntologyAgent` (lakehouse + ontology)
-- A 18-scenario benchmark with multi-dimensional scoring (metric
-  correctness, table coverage, relationship usage, ambiguity detection,
-  action-guardrail compliance) producing a markdown + JSON scorecard
+- 11 GQL competency queries run through
+  `scripts/04_refresh_and_validate.py`
+- Two provisioned Fabric Data Agents:
+  - **`NakedAgent`** — wired to the Lakehouse tables only (Spark SQL
+    engine; no ontology hints)
+  - **`OntologyAgent`** — wired to the ontology **only** (GQL engine;
+    the ontology runtime resolves the graph against the same Lakehouse
+    through the bindings / contextualizations, but the agent has no
+    direct SQL access)
+- An 18-scenario benchmark with multi-dimensional scoring (critic
+  verdict, table coverage, relationship usage, ambiguity detection,
+  action-guardrail compliance, signal coverage, and a deterministic
+  numeric-gold check for governed metrics) producing a Markdown + JSON
+  scorecard that hash-locks the scenario payload it was produced from
 
 ## Prerequisites
 
@@ -29,9 +37,24 @@ on a curated scenario benchmark.
   [Fabric Data Agent tenant settings](https://learn.microsoft.com/en-us/fabric/data-science/data-agent-tenant-settings)
   enabled, including "Capacities can be designated as Fabric Copilot
   capacities" and cross-geo processing/storing for AI
-- An Entra application (service principal) that is:
-  - granted `Tenant.ReadWrite.All` with admin consent, and
-  - added to the target Fabric workspace as **Admin**
+
+### Service-principal permissions (least privilege)
+
+The SP is used only by the numbered scripts (`01`..`05`). The
+user-context notebook runs as a user, so the SP does NOT need any
+OpenAI / Assistants API permissions.
+
+| Resource | Level needed | Why |
+|---|---|---|
+| Target Fabric workspace | **Admin** | Create/update ontologies, graph models, data agents; run Livy Spark sessions against the lakehouse |
+| Target Lakehouse (in that workspace) | inherits from workspace Admin | `scripts/03_setup.py` creates tables + bindings |
+| Entra app Graph scopes | *none* | The scripts talk only to the Fabric API (`api.fabric.microsoft.com`); no MS Graph calls |
+| Tenant-level app roles | *none required* | `Tenant.ReadWrite.All` is not used. Fabric scopes come from the workspace Admin assignment, not from a tenant-wide app role |
+
+Fabric workspace role mappings are documented in
+[Microsoft's workspace-role reference](https://learn.microsoft.com/en-us/fabric/fundamentals/roles-workspaces).
+Keep the SP scoped to the benchmark workspace — creating a fresh
+workspace per evaluation keeps the blast radius minimal.
 
 ## Setup
 
