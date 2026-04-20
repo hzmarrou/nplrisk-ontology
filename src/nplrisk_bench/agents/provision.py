@@ -291,24 +291,24 @@ def upsert_ontology_agent(
     ontology_id: str,
     ontology_name: str,
     ontology_config: dict,
-    selected_tables: Iterable[str],
-    lakehouse_display_name: str,
+    selected_tables: Iterable[str] = (),       # unused; kept for API symmetry with naked
+    lakehouse_display_name: str | None = None,  # unused; kept for API symmetry with naked
     name: str = "OntologyAgent",
     instructions: str | None = None,
     description: str = "Ontology-grounded data agent for semantic reasoning.",
 ) -> dict:
-    """Upsert an OntologyAgent wired to both the ontology and the lakehouse."""
+    """Upsert an OntologyAgent wired to ONLY the ontology.
+
+    Per the Fabric ontology tutorial (Tutorial part 4: Create data agent),
+    the agent is attached only to the ontology. The agent generates GQL
+    against the ontology's auto-provisioned graph model, which is already
+    bound to the lakehouse via bindings + contextualizations. Attaching
+    the lakehouse as a second source would let the agent bypass the
+    ontology with raw SQL and dilute the benchmark.
+    """
+    del selected_tables, lakehouse_display_name  # explicitly unused
     client = DataAgentClient(config)
 
-    lakehouse_ds = {
-        "artifactId": config.lakehouse_id,
-        "workspaceId": config.workspace_id,
-        "displayName": lakehouse_display_name,
-        "type": "lakehouse_tables",
-        "userDescription": LAKEHOUSE_DS_DESCRIPTION,
-        "dataSourceInstructions": LAKEHOUSE_DS_INSTRUCTIONS,
-        "elements": _lakehouse_ds_elements(ontology_config, selected_tables),
-    }
     ontology_ds = {
         "artifactId": ontology_id,
         "workspaceId": config.workspace_id,
@@ -318,10 +318,6 @@ def upsert_ontology_agent(
         "dataSourceInstructions": ONTOLOGY_DS_INSTRUCTIONS,
         "elements": _ontology_ds_elements(ontology_config),
     }
-    lakehouse_ds_path = (
-        f"Files/Config/draft/lakehouse-tables-"
-        f"{_sanitize_path_segment(lakehouse_display_name)}/datasource.json"
-    )
     ontology_ds_path = (
         f"Files/Config/draft/ontology-{_sanitize_path_segment(ontology_name)}/datasource.json"
     )
@@ -331,10 +327,7 @@ def upsert_ontology_agent(
         name=name,
         description=description,
         ai_instructions=instructions or ONTOLOGY_AGENT_INSTRUCTIONS,
-        datasource_payloads={
-            ontology_ds_path: ontology_ds,
-            lakehouse_ds_path: lakehouse_ds,
-        },
+        datasource_payloads={ontology_ds_path: ontology_ds},
     )
 
 
