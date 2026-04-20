@@ -129,6 +129,19 @@ print(f"Loaded {{len(df_scenarios)}} scenarios")
 df_scenarios.head(20)
 """))
 
+cells.append(md("""## 3b. Disable Spark's Arrow optimization
+
+`fabric-data-agent-sdk`'s internal `createDataFrame` call crashes with
+`[CANNOT_MERGE_TYPE] Can not merge type BooleanType and StructType` when
+Arrow optimization is enabled. The fallback path sometimes silently drops
+the freshly-written rows (so summaries / details come back empty for the
+current `eval_id`). Turning Arrow off for this session avoids it.
+"""))
+cells.append(code("""spark.conf.set("spark.sql.execution.arrow.pyspark.enabled", "false")
+spark.catalog.clearCache()
+print("Arrow optimization disabled and Spark catalog cache cleared.")
+"""))
+
 cells.append(md("""## 4. Configure the evaluation
 
 The critic prompt only receives `{query}` and `{expected_answer}` from the SDK
