@@ -1,0 +1,9 @@
+// CQ11: Loans with more than one co-borrower (mirrors scenario Q05).
+// Tests: role_type filtering on the borrow edge + aggregation with a
+// HAVING-like post-filter in GQL.
+MATCH (l:`Loan`)-[r:`has_borrower`]->(b:`Borrower`)
+WHERE r.role_type = 'co_borrower'
+RETURN l.loan_id AS loan_id, COUNT(b) AS co_borrower_count
+GROUP BY loan_id
+ORDER BY co_borrower_count DESC
+LIMIT 25;

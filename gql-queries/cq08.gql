@@ -1,0 +1,9 @@
+// CQ8: Enforcement events that involve an insolvency practitioner.
+// Tests: two separate edges out of Enforcement (to Loan and to
+// InsolvencyPractitioner) resolve without dropping either side.
+MATCH (e:`Enforcement`)-[:`enforcement_concerns_loan`]->(l:`Loan`)
+MATCH (e)-[:`enforcement_references_insolvency_practitioner`]->(p:`InsolvencyPractitioner`)
+RETURN l.loan_id AS loan_id,
+       p.full_name AS practitioner_name,
+       e.enforcement_id AS enforcement_id
+LIMIT 25;

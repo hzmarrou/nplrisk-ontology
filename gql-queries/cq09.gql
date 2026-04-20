@@ -1,0 +1,8 @@
+// CQ9: Exposure-weighted NPE ratio (mirrors scenario Q13).
+// Tests: numeric aggregation with a conditional sum expressed as two
+// passes over Loan. The Fabric tutorial workaround is to compute each
+// side as a named aggregate and divide in the RETURN clause.
+MATCH (l:`Loan`)
+RETURN SUM(l.principal_balance) AS total_exposure,
+       SUM(CASE WHEN l.is_non_performing = true THEN l.principal_balance ELSE 0 END)
+           AS npe_exposure;

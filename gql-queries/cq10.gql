@@ -1,0 +1,9 @@
+// CQ10: IFRS stage 3 coverage (mirrors scenario Q15).
+// Tests: the stage discriminator is consumed as a literal string match
+// against 'ifrs_stage_3_impaired' — agents that lump 'other_impaired'
+// in with it will get the wrong numerator.
+MATCH (l:`Loan`)
+RETURN SUM(l.principal_balance) AS total_principal,
+       SUM(CASE WHEN l.ifrs_stage = 'ifrs_stage_3_impaired'
+                THEN l.principal_balance ELSE 0 END)
+           AS stage_3_principal;
