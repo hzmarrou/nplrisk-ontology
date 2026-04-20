@@ -66,45 +66,62 @@ def _list_workspace_items(config: FabricConfig) -> list[dict]:
     return items
 
 
-def _cleanup_stale(config: FabricConfig, ontology_names: list[str], extra_lh_prefixes: list[str]) -> None:
-    """Delete ontologies / graph models / auto-created lakehouses matching the given names.
+def _cleanup_stale(
+    config: FabricConfig,
+    ontology_names: list[str],
+    graph_names: list[str],
+    lh_prefixes: list[str],
+) -> None:
+    """Delete ONLY artifacts this repo owns.
 
-    After the deletions, poll ``list_ontologies`` until the removed names no
-    longer appear — Fabric sometimes takes a handful of seconds to release
-    the displayName, and a second create_ontology call raced against that
-    window returns 409 Conflict.
+    Every artifact is matched by EXACT displayName (ontologies, graph
+    models) or by EXACT name-prefix (auto-created lakehouses). No
+    substring heuristics. The lists are passed in from the caller so a
+    hostile default never deletes another user's artifact in the same
+    workspace.
+
+    After deletions, we poll ``list_ontologies`` until the removed
+    displayNames are gone — Fabric's name reservation lags the delete
+    call and a racing ``create_ontology`` would return 409 Conflict.
     """
     items = _list_workspace_items(config)
     headers = get_headers(config)
     deleted_names: set[str] = set()
 
-    # 1. Delete ontologies (this usually removes the auto-created graph too, but we also clean below)
+    owned_ontologies = set(ontology_names)
+    owned_graphs = set(graph_names)
+    owned_lh_prefixes = tuple(lh_prefixes)
+
+    # 1. Delete ontologies we own (this usually removes the auto-created
+    # graph model too; we clean any orphan below).
     ont_client = OntologyClient(config)
     for o in ont_client.list_ontologies():
-        if o["displayName"] in ontology_names:
-            print(f"  deleting ontology {o['displayName']} ({o['id']})")
+        name = o["displayName"]
+        if name in owned_ontologies:
+            print(f"  deleting ontology {name} ({o['id']})")
             ont_client.delete_ontology(o["id"])
-            deleted_names.add(o["displayName"])
+            deleted_names.add(name)
 
-    # 2. Orphan graph models that match our name pattern
+    # 2. Orphan graph models — exact name match only.
     gc = GraphClient(config)
     for g in gc.list_graph_models():
         name = g.get("displayName", "")
-        if any(name.startswith(prefix) for prefix in ontology_names) or "_graph_" in name or name == "npl_graph":
+        if name in owned_graphs:
             print(f"  deleting graph model {name} ({g['id']})")
             try:
                 gc.delete_graph_model(g["id"])
             except Exception as exc:  # noqa: BLE001
                 print(f"    WARN: {exc}")
 
-    # 3. Auto-created lakehouses from previous runs
+    # 3. Auto-created lakehouses — exact prefix match only, and we never
+    # touch the lakehouse the agent/config points at.
     for it in items:
         if it.get("type") != "Lakehouse":
             continue
         if it.get("id") == config.lakehouse_id:
-            continue  # never touch the configured lakehouse
+            continue
         name = it.get("displayName", "")
-        if any(name.startswith(prefix) for prefix in extra_lh_prefixes):
+        if any(name.startswith(prefix) for prefix in owned_lh_prefixes):
             print(f"  deleting auto-created lakehouse {name} ({it['id']})")
             try:
                 r = requests.delete(
@@ -280,7 +297,10 @@ def main() -> None:
     parser.add_argument("--state-out", default=REPO_ROOT / "outputs" / "_state.json", type=Path)
     parser.add_argument("--cleanup-names", nargs="*",
                         default=["NPL_Risk", "npl_ontology", "NPLRisk_Access_Probe"],
-                        help="Ontology displayNames to delete before creating the new one.")
+                        help="Ontology displayNames to delete. Exact match only.")
+    parser.add_argument("--cleanup-graph-names", nargs="*",
+                        default=["NPL_Risk", "npl_ontology", "npl_graph"],
+                        help="Graph-model displayNames to delete. Exact match only.")
     parser.add_argument("--cleanup-lh-prefixes", nargs="*",
                         default=["npl_ontology_lh_", "NPL_Risk_lh_", "NPLRisk_Access_Probe_lh_"],
                         help="Auto-created lakehouse name prefixes to delete.")
@@ -295,9 +315,14 @@ def main() -> None:
     print(f"  workspace={config.workspace_id}  lakehouse={config.lakehouse_id}")
     print("=" * 60)
 
-    # 1. Cleanup
+    # 1. Cleanup — exact-match lists only, never substring heuristics.
     print("\n[1] Cleaning up stale NPL artifacts...")
-    _cleanup_stale(config, args.cleanup_names, args.cleanup_lh_prefixes)
+    _cleanup_stale(
+        config,
+        ontology_names=args.cleanup_names,
+        graph_names=args.cleanup_graph_names,
+        lh_prefixes=args.cleanup_lh_prefixes,
+    )
 
     # 2. Build schema parts, create ontology, push schema
     print("\n[2] Building initial definition...")
