@@ -181,6 +181,9 @@ display(ontology_details)
 
 cells.append(md("## 8. Side-by-side merge"))
 cells.append(code("""def normalize(df, suffix):
+    if df is None:
+        print(f"WARNING: {suffix} details are None. Check that the evaluation for this agent completed and wrote rows to the Delta table.")
+        return pd.DataFrame(columns=["question", "expected_answer"])
     keep = [c for c in ["question", "expected_answer", "actual_answer", "evaluation_result", "thread_url"] if c in df.columns]
     out = df[keep].copy()
     rename = {c: f"{c}_{suffix}" for c in out.columns if c not in ("question", "expected_answer")}
@@ -188,6 +191,14 @@ cells.append(code("""def normalize(df, suffix):
 
 naked_norm = normalize(naked_details, "naked")
 ontology_norm = normalize(ontology_details, "ontology")
+
+print(f"naked rows: {len(naked_norm)}, ontology rows: {len(ontology_norm)}")
+
+if naked_norm.empty and ontology_norm.empty:
+    raise RuntimeError(
+        "Both detail frames are empty. Re-run the evaluate_data_agent cells — "
+        "either the eval IDs expired or no rows landed in the Delta tables."
+    )
 
 side_by_side = pd.merge(naked_norm, ontology_norm, on=["question", "expected_answer"], how="outer")
 display(side_by_side)
