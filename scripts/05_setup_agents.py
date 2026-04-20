@@ -46,13 +46,19 @@ def main() -> None:
     print(f"Lakehouse: {lakehouse_name} ({config.lakehouse_id})")
     print(f"Ontology:  {state['ontologyName']} ({state['ontologyId']})")
 
-    # Limit the lakehouse datasource to the entity tables only (skip junctions).
-    prefix = cfg_dict.get("tablePrefix", "npl")
-    from nplrisk_bench.fabric_client.lakehouse_sync import entity_name_to_table
-    entity_tables = [
-        f"{prefix}_{entity_name_to_table(e['name'])}"
-        for e in cfg_dict["entities"]
-    ]
+    # Use the canonical tableName recorded in the config (set by the mapping
+    # step). Don't recompute from the entity name — OWL classes like
+    # "Enforcement" / "Forbearance" / "ExternalCollection" map to DDL tables
+    # "enforcement_event" / "forbearance_event" / "external_collection_event"
+    # and the snake_case heuristic would miss the "_event" suffix.
+    entity_tables = [e["tableName"] for e in cfg_dict["entities"]]
+    missing_tables = [e for e in cfg_dict["entities"] if not e.get("tableName")]
+    if missing_tables:
+        raise RuntimeError(
+            "ontology-config.json entries are missing `tableName`; rerun "
+            "scripts/02_build_mapping.py to regenerate. Affected entities: "
+            + ", ".join(e.get("name", "?") for e in missing_tables)
+        )
 
     print("\n[1] Provisioning NakedAgent...")
     naked = upsert_naked_agent(
