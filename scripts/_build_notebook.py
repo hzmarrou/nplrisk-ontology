@@ -156,8 +156,20 @@ cells.append(code("""import time
 from fabric.dataagent.client import FabricOpenAI
 
 
+def _make_client(agent_name: str) -> "FabricOpenAI":
+    \"\"\"Construct a FabricOpenAI client across known SDK signatures.
+
+    Newer SDK versions dropped the ``data_agent_stage`` constructor kwarg.
+    We try both forms so the notebook works against either.
+    \"\"\"
+    try:
+        return FabricOpenAI(artifact_name=agent_name, data_agent_stage=DATA_AGENT_STAGE)
+    except TypeError:
+        return FabricOpenAI(artifact_name=agent_name)
+
+
 def _call_once(agent_name: str, question: str, max_wait: int) -> str:
-    client = FabricOpenAI(artifact_name=agent_name, data_agent_stage=DATA_AGENT_STAGE)
+    client = _make_client(agent_name)
     assistant = client.beta.assistants.create(model="not-used")
     thread = client.beta.threads.create()
     client.beta.threads.messages.create(
@@ -179,6 +191,10 @@ def _call_once(agent_name: str, question: str, max_wait: int) -> str:
     return "\\n".join(p for p in pieces if p).strip() or "<empty>"
 
 
+# Exceptions that will fail the same way every time — no point retrying.
+_NON_RETRYABLE = (TypeError, ImportError, AttributeError)
+
+
 def ask_agent(agent_name: str, question: str,
               max_wait: int = MAX_ANSWER_WAIT_SECONDS,
               retries: int = RETRIES_PER_QUESTION) -> str:
@@ -186,6 +202,8 @@ def ask_agent(agent_name: str, question: str,
     for attempt in range(1, retries + 1):
         try:
             return _call_once(agent_name, question, max_wait)
+        except _NON_RETRYABLE as exc:
+            return f"<error: {exc}>"
         except Exception as exc:
             last_exc = exc
             if attempt < retries:
