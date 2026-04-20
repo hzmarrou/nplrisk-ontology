@@ -61,8 +61,12 @@ Run this notebook **inside Fabric in user context** (not via service principal).
 7. Saves a JSON report to `Files/npl/_agent_comparison.json` for `scripts/06_score.py`
 """))
 
-cells.append(md("## 1. Install the SDK"))
-cells.append(code("%pip install -U fabric-data-agent-sdk pandas"))
+cells.append(md("""## 1. Install the SDK
+
+`Jinja2==3.1.6` is pinned because Fabric's runtime ships a newer Jinja2 that
+breaks `fabric-data-agent-sdk`'s template rendering.
+"""))
+cells.append(code("%pip install -U fabric-data-agent-sdk pandas Jinja2==3.1.6"))
 
 cells.append(md("""## 2. Fresh-start: drop any stale evaluation tables
 
