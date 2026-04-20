@@ -1,12 +1,10 @@
 """Utility: regenerate the Fabric comparison notebook.
 
-Standalone so the notebook cell structure lives next to the rest of the
-project and can be rebuilt reproducibly. Run:
-
+Run:
     python scripts/_build_notebook.py
 
-This writes ``notebooks/compare_agents_fabric.ipynb`` from the cell
-definitions below. It is not part of the main pipeline.
+This rewrites ``notebooks/compare_agents_fabric.ipynb`` from the cell
+definitions below so the notebook stays in sync with the scenario set.
 """
 
 from __future__ import annotations
@@ -17,6 +15,8 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
 OUT = REPO / "notebooks" / "compare_agents_fabric.ipynb"
+
+SCENARIOS_JSON = (REPO / "scenarios" / "npl_scenarios.json").read_text(encoding="utf-8")
 
 
 def md(text: str) -> dict:
@@ -39,34 +39,57 @@ def code(text: str) -> dict:
     }
 
 
-SCENARIOS_JSON = (REPO / "scenarios" / "npl_scenarios.json").read_text(encoding="utf-8")
-
-
-cells = []
+cells: list[dict] = []
 
 cells.append(md("""# NakedAgent vs OntologyAgent — NPL risk benchmark
 
-Run this notebook **inside Fabric in user context** (not via service principal). The AISkill `/assistants` chat endpoint used by Data Agents does not accept SP tokens. Agent provisioning is done outside Fabric by `scripts/05_setup_agents.py`; agent evaluation runs here.
+Run this notebook **inside Fabric in user context** (not via service principal). Agent provisioning is done by `scripts/05_setup_agents.py` outside Fabric; agent evaluation runs here.
 
-**Before running:**
+**Prerequisites**
 
-1. Attach `NPLLakehouse` (or the lakehouse referenced in `.env`) to this notebook as the **default lakehouse**. The evaluation SDK fails with `Missing required Fabric context parameters` without it.
-2. Upload `scenarios/npl_scenarios.json` into the lakehouse at `Files/npl/agent-comparison-questions.json`. If that file is missing the notebook falls back to an inline copy.
+1. Attach the NPL lakehouse (the one referenced in your repo's `.env`) to this notebook as the **default lakehouse**. Without it, the evaluation SDK fails with `Missing required Fabric context parameters`.
+2. (Optional) Upload `scenarios/npl_scenarios.json` into the lakehouse at `Files/npl/agent-comparison-questions.json`. If that file is missing the notebook falls back to an embedded copy below.
 
-**What the notebook does:**
+**What the notebook does**
 
-- Loads the 18 NPL scenarios
-- Calls `evaluate_data_agent` for `NakedAgent` and `OntologyAgent`
-- Shows summary + per-question detail DataFrames
-- Merges a side-by-side table and saves a JSON report to `Files/npl/_agent_comparison.json`
+1. Installs the Fabric Data Agent SDK
+2. Drops any stale `npl_agent_compare_*` tables so a schema drift from a previous run can't corrupt this one
+3. Loads the 18 NPL scenarios
+4. Calls `evaluate_data_agent` for `NakedAgent` and `OntologyAgent`
+5. Shows summary + per-question detail DataFrames
+6. Merges a side-by-side comparison table
+7. Saves a JSON report to `Files/npl/_agent_comparison.json` for `scripts/06_score.py`
 """))
 
 cells.append(md("## 1. Install the SDK"))
 cells.append(code("%pip install -U fabric-data-agent-sdk pandas"))
 
-cells.append(md("## 2. Load the scenario set"))
-# Embed the scenarios file as a raw JSON string and parse at runtime so the
-# JSON literals (true/false/null) don't collide with Python's True/False/None.
+cells.append(md("""## 2. Fresh-start: drop any stale evaluation tables
+
+The Fabric `evaluate_data_agent` helper appends to a Delta table. If a previous
+run left a table with a slightly different schema (e.g. evolving SDK versions),
+the next append can fail with `CANNOT_MERGE_TYPE`. We drop any stale tables
+here so every run starts from a clean slate.
+"""))
+cells.append(code("""# Explicit table names — change these if you want to keep a previous run's tables around.
+NAKED_TABLE = "npl_agent_compare_naked_v2"
+ONTOLOGY_TABLE = "npl_agent_compare_ontology_v2"
+
+for tbl in (NAKED_TABLE, ONTOLOGY_TABLE, f"{NAKED_TABLE}_steps", f"{ONTOLOGY_TABLE}_steps"):
+    try:
+        spark.sql(f"DROP TABLE IF EXISTS {tbl}")
+        print(f"  dropped (if present): {tbl}")
+    except Exception as e:
+        print(f"  WARN dropping {tbl}: {e}")
+"""))
+
+cells.append(md("""## 3. Load the 18-scenario NPL benchmark
+
+The scenario set ships with the repo as `scenarios/npl_scenarios.json`. We
+prefer a lakehouse-uploaded copy at `Files/npl/agent-comparison-questions.json`
+so you can edit it between runs without touching the notebook, and fall back
+to an embedded copy so the notebook is always self-contained.
+"""))
 cells.append(code(f"""import json
 from pathlib import Path
 
@@ -74,6 +97,7 @@ import pandas as pd
 
 LAKEHOUSE_PATH = "/lakehouse/default/Files/npl/agent-comparison-questions.json"
 
+# Raw JSON string so Python does not mis-parse true/false/null as identifiers.
 INLINE_SCENARIOS_JSON = r\"\"\"{SCENARIOS_JSON}\"\"\"
 
 def load_scenarios():
@@ -101,22 +125,23 @@ print(f"Loaded {{len(df_scenarios)}} scenarios")
 df_scenarios.head(20)
 """))
 
-cells.append(md("""## 3. Configure the evaluation
+cells.append(md("""## 4. Configure the evaluation
 
-The critic prompt only receives `{query}` and `{expected_answer}` from the SDK. It is posted as a follow-up message in the same thread as the agent's prior answer; `{actual_answer}` is **not** a substituted placeholder and would raise `KeyError`."""))
+The critic prompt only receives `{query}` and `{expected_answer}` from the SDK
+(it is posted as a follow-up message in the same thread as the agent's prior
+answer). `{actual_answer}` is **not** a substituted placeholder and would raise
+`KeyError`.
+"""))
 cells.append(code("""NAKED_AGENT_NAME = "NakedAgent"
 ONTOLOGY_AGENT_NAME = "OntologyAgent"
 DATA_AGENT_STAGE = "sandbox"
-WORKSPACE_NAME = None
-
-NAKED_TABLE = "npl_agent_compare_naked"
-ONTOLOGY_TABLE = "npl_agent_compare_ontology"
+WORKSPACE_NAME = None   # keep None when this notebook runs in the agents' own workspace
 
 CRITIC_PROMPT = '''
 You judge whether YOUR PREVIOUS ANSWER in this thread satisfies the expected answer for an NPL-portfolio question.
 
 Rules:
-- Respond 'Yes' if your previous answer cites the expected metric / tables / tokens and avoids the traps listed (e.g. principal_balance vs balance_at_default, all impaired vs ifrs_stage_3_impaired).
+- Respond 'Yes' if your previous answer cites the expected metric / tables / tokens and avoids the traps listed (e.g. principal_balance vs balance_at_default, all-impaired vs ifrs_stage_3_impaired).
 - Respond 'No' if your answer is missing a required element, chose the wrong metric, refused to answer, or returned an error.
 - Respond 'Unclear' only if your answer is plausibly correct but partial and you cannot verify it from the tokens alone.
 
@@ -127,9 +152,19 @@ Query: {query}
 Expected Answer (criteria):
 {expected_answer}
 '''.strip()
+
+print("NAKED_TABLE   =", NAKED_TABLE)
+print("ONTOLOGY_TABLE=", ONTOLOGY_TABLE)
+print("NAKED_AGENT   =", NAKED_AGENT_NAME)
+print("ONTOLOGY_AGENT=", ONTOLOGY_AGENT_NAME)
+print("STAGE         =", DATA_AGENT_STAGE)
 """))
 
-cells.append(md("## 4. Evaluate NakedAgent"))
+cells.append(md("""## 5. Evaluate NakedAgent
+
+This writes results into the fresh `NAKED_TABLE` (and its `_steps` companion).
+Expect ~3 min on F16: each of the 18 questions goes through the agent thread + critic.
+"""))
 cells.append(code("""from fabric.dataagent.evaluation import evaluate_data_agent
 
 naked_eval_id = evaluate_data_agent(
@@ -143,7 +178,7 @@ naked_eval_id = evaluate_data_agent(
 print(f"NakedAgent evaluation_id: {naked_eval_id}")
 """))
 
-cells.append(md("## 5. Evaluate OntologyAgent"))
+cells.append(md("## 6. Evaluate OntologyAgent"))
 cells.append(code("""ontology_eval_id = evaluate_data_agent(
     df_scenarios,
     ONTOLOGY_AGENT_NAME,
@@ -155,7 +190,12 @@ cells.append(code("""ontology_eval_id = evaluate_data_agent(
 print(f"OntologyAgent evaluation_id: {ontology_eval_id}")
 """))
 
-cells.append(md("## 6. Summary metrics"))
+cells.append(md("""## 7. Summary metrics (per agent)
+
+If a summary is empty but the corresponding eval_id printed above, wait 20-30 s
+and re-run this cell — the Delta table can take a moment to become visible to
+the Spark catalog.
+"""))
 cells.append(code("""from fabric.dataagent.evaluation import get_evaluation_summary
 
 naked_summary = get_evaluation_summary(NAKED_TABLE, verbose=True)
@@ -167,22 +207,40 @@ print("\\n=== OntologyAgent summary ===")
 display(ontology_summary)
 """))
 
-cells.append(md("## 7. Per-question details"))
+cells.append(md("## 8. Per-question details"))
 cells.append(code("""from fabric.dataagent.evaluation import get_evaluation_details
 
-naked_details = get_evaluation_details(naked_eval_id, NAKED_TABLE, get_all_rows=True, verbose=False)
-ontology_details = get_evaluation_details(ontology_eval_id, ONTOLOGY_TABLE, get_all_rows=True, verbose=False)
+naked_details = get_evaluation_details(
+    naked_eval_id, NAKED_TABLE, get_all_rows=True, verbose=False
+)
+ontology_details = get_evaluation_details(
+    ontology_eval_id, ONTOLOGY_TABLE, get_all_rows=True, verbose=False
+)
 
-print("NakedAgent details:")
-display(naked_details)
-print("\\nOntologyAgent details:")
-display(ontology_details)
+def _describe(df, label):
+    if df is None:
+        return f"{label}: None (evaluation probably did not complete or the table is missing)"
+    return f"{label}: {df.shape[0]} rows x {df.shape[1]} cols"
+
+print(_describe(naked_details, "naked_details"))
+print(_describe(ontology_details, "ontology_details"))
+
+if naked_details is not None:
+    print("\\nNakedAgent details:")
+    display(naked_details)
+if ontology_details is not None:
+    print("\\nOntologyAgent details:")
+    display(ontology_details)
 """))
 
-cells.append(md("## 8. Side-by-side merge"))
+cells.append(md("""## 9. Side-by-side merge
+
+Joins the two details frames on the question text so each row lines up both
+agents' answers.
+"""))
 cells.append(code("""def normalize(df, suffix):
     if df is None:
-        print(f"WARNING: {suffix} details are None. Check that the evaluation for this agent completed and wrote rows to the Delta table.")
+        print(f"WARNING: {suffix} details are None. That agent's evaluation didn't produce rows.")
         return pd.DataFrame(columns=["question", "expected_answer"])
     keep = [c for c in ["question", "expected_answer", "actual_answer", "evaluation_result", "thread_url"] if c in df.columns]
     out = df[keep].copy()
@@ -196,7 +254,7 @@ print(f"naked rows: {len(naked_norm)}, ontology rows: {len(ontology_norm)}")
 
 if naked_norm.empty and ontology_norm.empty:
     raise RuntimeError(
-        "Both detail frames are empty. Re-run the evaluate_data_agent cells — "
+        "Both detail frames are empty. Re-run cells 5 and 6 — "
         "either the eval IDs expired or no rows landed in the Delta tables."
     )
 
@@ -204,7 +262,11 @@ side_by_side = pd.merge(naked_norm, ontology_norm, on=["question", "expected_ans
 display(side_by_side)
 """))
 
-cells.append(md("## 9. Persist the comparison JSON for scripts/06_score.py"))
+cells.append(md("""## 10. Persist the comparison JSON for `scripts/06_score.py`
+
+Downloads/save the resulting `_agent_comparison.json` to your local
+`nplrisk-ontology/outputs/` folder, then run `python scripts/06_score.py`.
+"""))
 cells.append(code("""import os
 from datetime import datetime
 
@@ -218,12 +280,12 @@ report = {
         "naked": {
             "name": NAKED_AGENT_NAME,
             "evaluationId": str(naked_eval_id),
-            "summary": naked_summary.to_dict(orient="records"),
+            "summary": naked_summary.to_dict(orient="records") if naked_summary is not None else [],
         },
         "ontology": {
             "name": ONTOLOGY_AGENT_NAME,
             "evaluationId": str(ontology_eval_id),
-            "summary": ontology_summary.to_dict(orient="records"),
+            "summary": ontology_summary.to_dict(orient="records") if ontology_summary is not None else [],
         },
     },
     "perQuestion": side_by_side.to_dict(orient="records"),
@@ -233,17 +295,18 @@ out_path = f"{OUTPUT_DIR}/_agent_comparison.json"
 with open(out_path, "w", encoding="utf-8") as f:
     json.dump(report, f, indent=2, default=str)
 print(f"Saved: {out_path}")
+print(f"Rows: {len(report['perQuestion'])}")
 """))
 
-cells.append(md("""## Where OntologyAgent should win
+cells.append(md("""## What to look for
 
-- **Graph traversal** (Q04, Q06, Q09, Q10, Q11) — NakedAgent tends to lose join direction
-- **Governed metrics** (Q13, Q14, Q15) — the EBA-defined metric (e.g. `balance_at_default`, `ifrs_stage_3_impaired`) must be chosen, not a proxy like `principal_balance` or `all_impaired`
-- **Negation** (Q12) — "loans with NO collateral" via anti-join
-- **Ambiguity & guardrail** (Q16, Q17, Q18) — must flag ambiguity or refuse to execute action-oriented requests
+- **Aggregate accuracy** — OntologyAgent should clear NakedAgent on overall `Yes` rate, especially past Q05.
+- **Biggest ontology wins** — Q08 (negation), Q09 (counterparty-group rollup), Q13/Q14/Q15 (governed metrics where NakedAgent picks the wrong column), Q16/Q17 (ambiguity), Q18 (action guardrail).
+- **Expected ties** — Q01, Q02, Q03 (single-table sanity). If OntologyAgent loses any of these, investigate the prompt.
 
-Sanity-check questions (Q01–Q03) should be a tie.
+When you're happy with the results, download `Files/npl/_agent_comparison.json` to your local `nplrisk-ontology/outputs/` folder and run `python scripts/06_score.py` for the final scorecard.
 """))
+
 
 notebook = {
     "cells": cells,
