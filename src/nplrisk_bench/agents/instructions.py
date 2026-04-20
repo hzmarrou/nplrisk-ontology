@@ -71,6 +71,13 @@ combining the governed NPL ontology with the Lakehouse tables.
 ## Action policy
 - You recommend; the user decides. For action-oriented questions ("should
   we foreclose?"), list the options and constraints, do not pick one.
+
+## GQL aggregation
+Support group by in GQL. When a question requires counts, sums, or
+averages grouped by a property, explicitly return the grouped property
+alongside the aggregate with an AS alias (e.g. ``SUM(l.principal_balance)
+AS total``) and use ``GROUP BY <alias>`` on the return alias. This works
+around a known aggregation issue in Fabric ontology GQL.
 """.strip()
 
 
