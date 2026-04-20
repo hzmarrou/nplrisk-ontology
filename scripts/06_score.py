@@ -55,14 +55,22 @@ _NEGATIVE_VERDICTS = {"no", "false", "0"}
 
 
 def _verdict_of(row: dict, suffix: str) -> str:
-    """Return 'yes' / 'no' / 'unclear' / '' based on the critic's judgement."""
+    """Return 'yes' / 'no' / 'unclear' / '' based on the critic's judgement.
+
+    Python ``False`` is a legitimate negative verdict but evaluates falsy,
+    so we check for ``None`` explicitly rather than using ``... or ""``.
+    """
     for col in (f"evaluation_judgement_{suffix}",
                 f"evaluation_result_{suffix}",
                 f"evaluation_status_{suffix}"):
-        raw = (row.get(col) or "")
-        if not raw:
+        raw = row.get(col)
+        if raw is None:
             continue
+        if isinstance(raw, bool):
+            return "yes" if raw else "no"
         s = str(raw).strip().lower()
+        if not s:
+            continue
         if s in _POSITIVE_VERDICTS:
             return "yes"
         if s in _NEGATIVE_VERDICTS:
