@@ -215,7 +215,13 @@ def _match_class_to_table(
     overrides: dict[str, str] | None = None,
 ) -> str | None:
     if overrides and class_name in overrides:
-        return overrides[class_name]
+        # Only honour the override if it names a table that actually
+        # exists in the DDL; otherwise fall back to the candidate search
+        # so the mapping report captures the drift instead of the
+        # downstream code crashing with a KeyError.
+        override = overrides[class_name]
+        if override in tables:
+            return override
     for cand in _class_to_table_candidates(class_name):
         if cand in tables:
             return cand
@@ -254,6 +260,7 @@ def build_ontology_config(
     class_table_overrides: dict[str, str] | None = None,
     skip_classes: set[str] | None = None,
     auto_fk_relationships: bool = True,
+    strict: bool = False,
 ) -> dict:
     """Produce the Fabric-ready ontology config dict.
 
@@ -271,9 +278,16 @@ def build_ontology_config(
         Pass a list of root class names (e.g. ``["Borrower", "Loan"]``)
         to collapse their subclass hierarchies before mapping.
     auto_fk_relationships:
-        When ``True``, emit relationships for FKs that don't have a matching
-        OWL object property. Relationship names are derived from
-        ``{source_table}_to_{target_class}``.
+        When ``True``, emit relationships for FKs that don't have a
+        matching OWL object property. Relationship names are derived
+        from ``{source_table}_to_{target_class}``.
+    strict:
+        When ``True``, raise ``RuntimeError`` if any OWL class fails to
+        match a DDL table, any relationship's endpoints don't both
+        resolve, or any relationship can't find a context table. Default
+        ``False`` preserves the historical best-effort behaviour; the
+        mapping report is always returned on the config under
+        ``_mapping_report`` either way.
     """
     class_overrides = {**DEFAULT_CLASS_TABLE_OVERRIDES, **(class_table_overrides or {})}
     skip = DEFAULT_SKIP_CLASSES | (skip_classes or set())
@@ -281,6 +295,12 @@ def build_ontology_config(
     source = parsed.flatten_hierarchy(flatten_roots) if flatten_roots else parsed
 
     tables = load_ddl_tables(ddl_path)
+
+    report = {
+        "unmapped_classes": [],   # OWL class name -> no matching DDL table
+        "unmapped_relationships": [],  # OWL object prop whose endpoints don't both resolve
+        "unresolved_contexts": [],    # rel name -> could not pick context table / FK columns
+    }
 
     # -- 1. Map OWL classes -> DDL tables ----------------------------------
     class_to_table: dict[str, str] = {}
@@ -290,6 +310,8 @@ def build_ontology_config(
         table = _match_class_to_table(cls.name, tables, class_overrides)
         if table:
             class_to_table[cls.name] = table
+        else:
+            report["unmapped_classes"].append(cls.name)
 
     # Reverse index for FK lookup
     table_to_class: dict[str, str] = {t: c for c, t in class_to_table.items()}
@@ -362,13 +384,24 @@ def build_ontology_config(
         source_cls = op.domain_name
         target_cls = op.range_name
         if source_cls not in class_to_table or target_cls not in class_to_table:
+            report["unmapped_relationships"].append({
+                "name": op.name,
+                "source": source_cls,
+                "target": target_cls,
+                "reason": "endpoint class not mapped to a DDL table",
+            })
             continue
 
         ctx_table, source_col, target_col = _resolve_context(
             op, source_cls, target_cls, class_to_table, tables, table_to_class,
         )
         if ctx_table is None:
-            # Leave unresolved rels out rather than emitting something broken.
+            report["unresolved_contexts"].append({
+                "name": op.name,
+                "source": source_cls,
+                "target": target_cls,
+                "reason": "no viable context table / FK column pair",
+            })
             continue
 
         emit(
@@ -430,12 +463,25 @@ def build_ontology_config(
                     target_col,
                 )
 
+    if strict and (report["unmapped_classes"] or report["unmapped_relationships"]
+                   or report["unresolved_contexts"]):
+        raise RuntimeError(
+            "build_ontology_config(strict=True) refused to produce a partial config:\n"
+            f"  unmapped_classes = {report['unmapped_classes']}\n"
+            f"  unmapped_relationships = "
+            f"{[r['name'] for r in report['unmapped_relationships']]}\n"
+            f"  unresolved_contexts = "
+            f"{[r['name'] for r in report['unresolved_contexts']]}\n"
+            "Fix DDL ↔ OWL mismatches (missing tables, renamed FKs) and rerun."
+        )
+
     return {
         "name": display_name,
         "description": description,
         "tablePrefix": table_prefix,
         "entities": entities,
         "relationships": relationships,
+        "_mapping_report": report,
     }
 
 

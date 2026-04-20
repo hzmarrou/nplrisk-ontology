@@ -31,6 +31,10 @@ def main() -> None:
     parser.add_argument("--flatten", nargs="*", default=["Borrower", "Loan", "Collateral"],
                         help="OWL class names to flatten (drop subclasses).")
     parser.add_argument("--out", default=REPO_ROOT / "outputs" / "ontology-config.json", type=Path)
+    parser.add_argument("--strict", action="store_true",
+                        help="Fail (non-zero exit) if any OWL class or "
+                             "object property cannot be mapped to the DDL. "
+                             "Recommended for CI / review runs.")
     args = parser.parse_args()
 
     print(f"Parsing OWL from {args.owl} ...")
@@ -44,7 +48,10 @@ def main() -> None:
         description=args.description,
         table_prefix=args.table_prefix,
         flatten_roots=args.flatten,
+        strict=args.strict,
     )
+
+    report = cfg.pop("_mapping_report", {})
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
@@ -57,6 +64,22 @@ def main() -> None:
     for r in cfg["relationships"]:
         ctx = r.get("contextTable", "")
         print(f"  rel:    {r['name']:45s} {r['source']:20s} -> {r['target']:20s} ctx={ctx}")
+
+    if report:
+        skipped = (
+            len(report.get("unmapped_classes", []))
+            + len(report.get("unmapped_relationships", []))
+            + len(report.get("unresolved_contexts", []))
+        )
+        if skipped:
+            print(f"\nMapping report ({skipped} skipped; rerun with --strict to fail):")
+            for name in report.get("unmapped_classes", []):
+                print(f"  - class not in DDL:      {name}")
+            for r in report.get("unmapped_relationships", []):
+                print(f"  - endpoint unmapped:     {r['name']} ({r['source']} -> {r['target']})")
+            for r in report.get("unresolved_contexts", []):
+                print(f"  - no context table:      {r['name']} ({r['source']} -> {r['target']})")
+
     print(f"\nWrote {args.out}")
 
 

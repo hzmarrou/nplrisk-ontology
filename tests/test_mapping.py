@@ -146,3 +146,42 @@ def test_relationship_context_tables_exist(config: dict, ddl_tables: dict) -> No
         assert ctx.startswith(prefix + "_")
         raw = ctx[len(prefix) + 1:]
         assert raw in ddl_tables, f"context table {raw} not found in DDL"
+
+
+# ---------------------------------------------------------------------------
+# R21 — mapping fail-fast contract
+# ---------------------------------------------------------------------------
+
+
+def test_mapping_report_is_present_with_real_ontology(config: dict) -> None:
+    """Every produced config carries a ``_mapping_report`` key with three
+    lists so the caller can inspect drift even when strict=False."""
+    # Note: scripts/02_build_mapping.py pops this key before writing the
+    # config to disk, but the in-process caller sees it.
+    parsed = parse_owl(OWL_PATH)
+    cfg = build_ontology_config(
+        parsed,
+        DDL_PATH,
+        flatten_roots=["Borrower", "Loan", "Collateral"],
+    )
+    assert "_mapping_report" in cfg
+    report = cfg["_mapping_report"]
+    for key in ("unmapped_classes", "unmapped_relationships", "unresolved_contexts"):
+        assert key in report
+        assert isinstance(report[key], list)
+
+
+def test_strict_rejects_unmapped_class(tmp_path: Path) -> None:
+    """strict=True must raise when an OWL class has no DDL table match."""
+    parsed = parse_owl(OWL_PATH)
+    # A bogus skip-override forces a class to be lost by removing its
+    # table entry via an override pointing at a non-existent table.
+    bogus_ddl = tmp_path / "empty.sql"
+    bogus_ddl.write_text("-- no tables here --", encoding="utf-8")
+    with pytest.raises(RuntimeError, match="unmapped_classes"):
+        build_ontology_config(
+            parsed,
+            bogus_ddl,
+            flatten_roots=["Borrower", "Loan", "Collateral"],
+            strict=True,
+        )
