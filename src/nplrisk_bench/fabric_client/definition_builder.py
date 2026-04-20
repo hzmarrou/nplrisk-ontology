@@ -330,7 +330,10 @@ def build_from_config(
             "key_prop_ids": key_prop_ids,
             "key_prop_names": key_prop_names,
             "prop_ids": {p["name"]: p["id"] for p in et_def["properties"]},
-            "table": namer(name),
+            # Explicit ``tableName`` in the config wins over the default namer
+            # so entities whose physical table does not match their OWL name
+            # (e.g. Enforcement -> npl_enforcement_event) are wired correctly.
+            "table": entity_cfg.get("tableName") or namer(name),
         }
 
     relationship_map: dict = {}

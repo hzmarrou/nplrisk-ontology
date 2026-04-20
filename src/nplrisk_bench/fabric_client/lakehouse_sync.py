@@ -90,10 +90,11 @@ def load_csv_data(
 ) -> None:
     """Load per-entity CSVs into their Lakehouse tables via INSERT statements.
 
-    ``filename_resolver(entity_name)`` returns the path to the CSV
-    relative to ``csv_dir``. By default, the file is
-    ``{entity_name}.csv``. Callers that use snake_case CSV names should
-    pass ``filename_resolver=lambda name: f"{entity_name_to_table(name)}.csv"``.
+    Resolution order for the CSV filename:
+
+    1. ``entity_cfg["csvFile"]`` if present
+    2. ``filename_resolver(entity_name)`` if supplied
+    3. ``{entity_name}.csv``
     """
     csv_dir = Path(csv_dir)
     resolver = filename_resolver or (lambda name: f"{name}.csv")
@@ -101,7 +102,8 @@ def load_csv_data(
     for entity_cfg in entities_config:
         name = entity_cfg["name"]
         table = entity_map[name]["table"]
-        csv_path = csv_dir / resolver(name)
+        csv_file = entity_cfg.get("csvFile") or resolver(name)
+        csv_path = csv_dir / csv_file
 
         if not csv_path.exists():
             print(f"  SKIP {name} - seed file missing: {csv_path}")

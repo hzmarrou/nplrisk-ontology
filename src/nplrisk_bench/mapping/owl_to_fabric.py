@@ -321,6 +321,11 @@ def build_ontology_config(
 
         entity = {
             "name": cls_name,
+            # Pin the physical table + CSV filename derived from the DDL so
+            # OWL classes that don't share their name with the DDL table
+            # (e.g. Enforcement -> enforcement_event) are wired correctly.
+            "tableName": f"{table_prefix}_{table_name}",
+            "csvFile": f"{table_name}.csv",
             "keyProperty": pk_cols[0] if len(pk_cols) == 1 else pk_cols,
             "properties": properties,
         }

@@ -67,9 +67,16 @@ def _list_workspace_items(config: FabricConfig) -> list[dict]:
 
 
 def _cleanup_stale(config: FabricConfig, ontology_names: list[str], extra_lh_prefixes: list[str]) -> None:
-    """Delete ontologies / graph models / auto-created lakehouses matching the given names."""
+    """Delete ontologies / graph models / auto-created lakehouses matching the given names.
+
+    After the deletions, poll ``list_ontologies`` until the removed names no
+    longer appear — Fabric sometimes takes a handful of seconds to release
+    the displayName, and a second create_ontology call raced against that
+    window returns 409 Conflict.
+    """
     items = _list_workspace_items(config)
     headers = get_headers(config)
+    deleted_names: set[str] = set()
 
     # 1. Delete ontologies (this usually removes the auto-created graph too, but we also clean below)
     ont_client = OntologyClient(config)
@@ -77,6 +84,7 @@ def _cleanup_stale(config: FabricConfig, ontology_names: list[str], extra_lh_pre
         if o["displayName"] in ontology_names:
             print(f"  deleting ontology {o['displayName']} ({o['id']})")
             ont_client.delete_ontology(o["id"])
+            deleted_names.add(o["displayName"])
 
     # 2. Orphan graph models that match our name pattern
     gc = GraphClient(config)
@@ -107,17 +115,58 @@ def _cleanup_stale(config: FabricConfig, ontology_names: list[str], extra_lh_pre
             except Exception as exc:  # noqa: BLE001
                 print(f"    WARN: {exc}")
 
+    # 4. Wait until every deleted ontology displayName is actually gone.
+    if deleted_names:
+        print(f"  waiting for {len(deleted_names)} ontology deletion(s) to propagate...")
+        deadline = time.time() + 120
+        while time.time() < deadline:
+            remaining = {o["displayName"] for o in ont_client.list_ontologies()} & deleted_names
+            if not remaining:
+                print("    deletions propagated.")
+                return
+            time.sleep(5)
+        print(f"    WARN: still seeing {sorted(remaining)} after 120s; continuing anyway.")
 
-def _create_ontology_with_id(ont: OntologyClient, name: str, description: str) -> str:
-    result = ont.create_ontology(name, description=description)
-    ontology_id = result.get("id")
-    if ontology_id:
-        return ontology_id
-    time.sleep(3)
-    for o in ont.list_ontologies():
-        if o["displayName"] == name:
-            return o["id"]
-    raise RuntimeError(f"Could not resolve newly created ontology '{name}'")
+
+def _create_ontology_with_id(
+    ont: OntologyClient,
+    name: str,
+    description: str,
+    *,
+    conflict_retries: int = 12,
+    conflict_backoff: int = 10,
+) -> str:
+    """Create an ontology, retrying on 409 Conflict.
+
+    Fabric reports a deleted displayName as gone from ``list_ontologies``
+    before its internal name reservation is actually released. A fresh
+    POST in that window returns 409. We retry with a modest backoff until
+    the name becomes available.
+    """
+    for attempt in range(1, conflict_retries + 1):
+        try:
+            result = ont.create_ontology(name, description=description)
+        except requests.exceptions.HTTPError as exc:
+            status = exc.response.status_code if exc.response is not None else None
+            if status == 409 and attempt < conflict_retries:
+                print(f"  create returned 409 (attempt {attempt}); waiting {conflict_backoff}s before retry...")
+                time.sleep(conflict_backoff)
+                continue
+            raise
+
+        ontology_id = result.get("id")
+        if ontology_id:
+            return ontology_id
+        time.sleep(3)
+        for o in ont.list_ontologies():
+            if o["displayName"] == name:
+                return o["id"]
+        raise RuntimeError(f"Could not resolve newly created ontology '{name}'")
+
+    raise RuntimeError(
+        f"Could not create ontology '{name}' after {conflict_retries} attempts; "
+        f"Fabric kept returning 409 Conflict."
+    )
 
 
 # -- Junction table handling ------------------------------------------------
@@ -230,10 +279,10 @@ def main() -> None:
     parser.add_argument("--csv-dir", default=REPO_ROOT / "input" / "data" / "csv", type=Path)
     parser.add_argument("--state-out", default=REPO_ROOT / "outputs" / "_state.json", type=Path)
     parser.add_argument("--cleanup-names", nargs="*",
-                        default=["NPL_Risk", "npl_ontology"],
+                        default=["NPL_Risk", "npl_ontology", "NPLRisk_Access_Probe"],
                         help="Ontology displayNames to delete before creating the new one.")
     parser.add_argument("--cleanup-lh-prefixes", nargs="*",
-                        default=["npl_ontology_lh_", "NPL_Risk_lh_"],
+                        default=["npl_ontology_lh_", "NPL_Risk_lh_", "NPLRisk_Access_Probe_lh_"],
                         help="Auto-created lakehouse name prefixes to delete.")
     args = parser.parse_args()
 
@@ -268,10 +317,16 @@ def main() -> None:
     junction_specs = _junction_tables_to_load(cfg_dict, ddl_tables, entity_tables)
     all_tables = sorted(entity_tables | {j[0] for j in junction_specs})
 
+    # Any `npl_<raw_ddl_table_name>` name is a legal candidate (including
+    # previous-run ghosts like npl_enforcement that the current mapping no
+    # longer produces). Drop everything so we start from a clean slate.
+    stale_tables = {f"{cfg_dict.get('tablePrefix','npl')}_{raw}" for raw in ddl_tables}
+    drop_targets = sorted(set(all_tables) | stale_tables)
+
     print(f"\n[5] Opening Livy session...")
     with LivyClient(config) as livy:
         print("\n[5a] Dropping any pre-existing NPL tables...")
-        for t in all_tables:
+        for t in drop_targets:
             livy.sql(f"DROP TABLE IF EXISTS {t}")
 
         print("\n[5b] Creating entity tables...")

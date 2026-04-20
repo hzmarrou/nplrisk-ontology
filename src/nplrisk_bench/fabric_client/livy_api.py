@@ -47,14 +47,14 @@ class LivyClient:
     def _headers(self) -> dict[str, str]:
         return {**get_headers(self.config), "Content-Type": "application/json"}
 
-    def create_session(self, poll_interval: int = 5) -> str:
+    def create_session(self, poll_interval: int = 5, idle_timeout: int = 600) -> str:
         resp = requests.post(self.base_url, headers=self._headers(), json={})
         if resp.status_code not in (200, 202):
             raise RuntimeError(f"Failed to create session: {resp.status_code} {resp.text}")
         session = resp.json()
         self.session_id = session["id"]
         self.session_url = f"{self.base_url}/{self.session_id}"
-        self._wait_for_session_idle(poll_interval)
+        self._wait_for_session_idle(poll_interval, idle_timeout)
         return self.session_id
 
     def close_session(self) -> None:
@@ -93,15 +93,29 @@ class LivyClient:
             raise RuntimeError(f"Spark error: {output.get('ename')}: {output.get('evalue')}")
         return output.get("data", {}).get("text/plain")
 
-    def _wait_for_session_idle(self, poll_interval: int = 5) -> None:
-        while True:
+    def _wait_for_session_idle(self, poll_interval: int = 5, timeout: int = 600) -> None:
+        """Poll the session until it reaches ``idle``.
+
+        Raises ``TimeoutError`` if Spark scheduling takes longer than
+        ``timeout`` seconds so callers don't hang indefinitely on a
+        backed-up capacity.
+        """
+        deadline = time.time() + timeout
+        last_state = "unknown"
+        while time.time() < deadline:
             resp = requests.get(self.session_url, headers=self._headers())
-            state = resp.json().get("state", "unknown")
-            if state == "idle":
+            last_state = resp.json().get("state", "unknown")
+            if last_state == "idle":
+                print(f"  livy session {self.session_id} is idle", flush=True)
                 return
-            if state in ("dead", "killed", "error"):
-                raise RuntimeError(f"Session entered bad state: {state}")
+            if last_state in ("dead", "killed", "error"):
+                raise RuntimeError(f"Session entered bad state: {last_state}")
             time.sleep(poll_interval)
+        raise TimeoutError(
+            f"Livy session {self.session_id} did not reach idle within "
+            f"{timeout}s (last state: {last_state}). Capacity may be "
+            f"backed up — try again in a few minutes."
+        )
 
     @staticmethod
     def _escape(s: str) -> str:
