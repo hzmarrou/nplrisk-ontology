@@ -3,8 +3,29 @@
 Run:
     python scripts/_build_notebook.py
 
-This rewrites ``notebooks/compare_agents_fabric.ipynb`` from the cell
+Rewrites ``notebooks/compare_agents_fabric.ipynb`` from the cell
 definitions below so the notebook stays in sync with the scenario set.
+
+Design notes
+------------
+The notebook deliberately does **not** use ``fabric.dataagent.evaluation``.
+During development we hit repeated issues with its Delta write path
+(`CANNOT_MERGE_TYPE BooleanType vs StructType`, Arrow `BufferHolder`
+errors, silently missing rows, unresolvable table names). Instead we use
+``FabricOpenAI`` to chat with each agent directly. That produces the
+same answers, bypasses all the Spark write gymnastics, and gives us a
+reproducible, deterministic benchmark:
+
+* Each agent is asked each question via OpenAI-compatible Assistants API
+* The answer is scored with a strict token-match: every ``ontology_signals``
+  token of the scenario must appear (case-insensitive substring) for the
+  answer to count as correct
+* Results land in a plain pandas DataFrame and a JSON file on the
+  attached lakehouse; no Delta tables, no schema inference, no SDK quirks
+
+This makes the evaluation auditable end-to-end and lets
+``scripts/06_score.py`` score the same output locally without needing a
+Fabric runtime.
 """
 
 from __future__ import annotations
@@ -41,297 +62,288 @@ def code(text: str) -> dict:
 
 cells: list[dict] = []
 
+# ---------------------------------------------------------------------------
+# Header
+# ---------------------------------------------------------------------------
 cells.append(md("""# NakedAgent vs OntologyAgent — NPL risk benchmark
 
-Run this notebook **inside Fabric in user context** (not via service principal). Agent provisioning is done by `scripts/05_setup_agents.py` outside Fabric; agent evaluation runs here.
+Side-by-side evaluation of two Fabric Data Agents — one grounded in an NPL ontology (`OntologyAgent`), one wired only to the lakehouse tables (`NakedAgent`) — on 18 scenarios spanning sanity, multi-hop traversal, graph reasoning, governed metrics, ambiguity, and action guardrails.
 
-**Prerequisites**
+## How it works
 
-1. Attach the NPL lakehouse (the one referenced in your repo's `.env`) to this notebook as the **default lakehouse**. Without it, the evaluation SDK fails with `Missing required Fabric context parameters`.
-2. (Optional) Upload `scenarios/npl_scenarios.json` into the lakehouse at `Files/npl/agent-comparison-questions.json`. If that file is missing the notebook falls back to an embedded copy below.
+For each scenario the notebook:
 
-**What the notebook does**
+1. Sends the question to `NakedAgent` via `FabricOpenAI` and captures the final text reply
+2. Does the same for `OntologyAgent`
+3. Scores each answer with a strict token check — every `ontology_signals` token in the scenario must appear in the response (case-insensitive substring) for the answer to count as correct
+4. Emits a side-by-side DataFrame and a JSON report to `Files/npl/_agent_comparison.json` on the attached lakehouse
 
-1. Installs the Fabric Data Agent SDK
-2. Drops any stale `npl_agent_compare_*` tables so a schema drift from a previous run can't corrupt this one
-3. Loads the 18 NPL scenarios
-4. Calls `evaluate_data_agent` for `NakedAgent` and `OntologyAgent`
-5. Shows summary + per-question detail DataFrames
-6. Merges a side-by-side comparison table
-7. Saves a JSON report to `Files/npl/_agent_comparison.json` for `scripts/06_score.py`
+The scoring is deterministic and does not depend on any LLM-judge: every run on the same agents produces the same scorecard.
+
+## Prerequisites
+
+- **Default lakehouse must be attached** — left sidebar → Lakehouses → + Add → star it. The notebook writes the report under `Files/npl/` on this lakehouse.
+- `NakedAgent` and `OntologyAgent` already provisioned in this workspace (`scripts/05_setup_agents.py` does this outside of Fabric).
+- The notebook is self-contained — if `Files/npl/agent-comparison-questions.json` is not present in the lakehouse, an inline copy of the 18 scenarios is used as a fallback.
 """))
 
+# ---------------------------------------------------------------------------
+# 1. Install
+# ---------------------------------------------------------------------------
 cells.append(md("""## 1. Install the SDK
 
-`Jinja2==3.1.6` is pinned because Fabric's runtime ships a newer Jinja2 that
-breaks `fabric-data-agent-sdk`'s template rendering.
-"""))
+`Jinja2==3.1.6` is pinned because the Fabric runtime ships a newer Jinja2 that breaks the Data Agent SDK's template rendering."""))
 cells.append(code("%pip install -U fabric-data-agent-sdk pandas Jinja2==3.1.6"))
 
-cells.append(md("""## 2. Fresh-start: drop any stale evaluation tables
+# ---------------------------------------------------------------------------
+# 2. Configure
+# ---------------------------------------------------------------------------
+cells.append(md("## 2. Configure the run"))
+cells.append(code("""# -- Agent configuration ----------------------------------------------------
+NAKED_AGENT_NAME = "NakedAgent"
+ONTOLOGY_AGENT_NAME = "OntologyAgent"
+DATA_AGENT_STAGE = "sandbox"   # use "production" after you have published the agents
 
-The Fabric `evaluate_data_agent` helper appends to a Delta table. If a previous
-run left a table with a slightly different schema (e.g. evolving SDK versions),
-the next append can fail with `CANNOT_MERGE_TYPE`. We drop any stale tables
-here so every run starts from a clean slate.
+# -- Output --------------------------------------------------------------------
+OUTPUT_DIR = "/lakehouse/default/Files/npl"
+OUTPUT_FILE = f"{OUTPUT_DIR}/_agent_comparison.json"
+
+# -- Reliability knobs ---------------------------------------------------------
+MAX_ANSWER_WAIT_SECONDS = 300     # per question, across the agent thread + run
+RETRIES_PER_QUESTION = 2          # retry a failing question before giving up
 """))
-cells.append(code("""# Explicit table names — change these if you want to keep a previous run's tables around.
-NAKED_TABLE = "npl_agent_compare_naked_v2"
-ONTOLOGY_TABLE = "npl_agent_compare_ontology_v2"
 
-for tbl in (NAKED_TABLE, ONTOLOGY_TABLE, f"{NAKED_TABLE}_steps", f"{ONTOLOGY_TABLE}_steps"):
-    try:
-        spark.sql(f"DROP TABLE IF EXISTS {tbl}")
-        print(f"  dropped (if present): {tbl}")
-    except Exception as e:
-        print(f"  WARN dropping {tbl}: {e}")
-"""))
-
+# ---------------------------------------------------------------------------
+# 3. Load scenarios
+# ---------------------------------------------------------------------------
 cells.append(md("""## 3. Load the 18-scenario NPL benchmark
 
-The scenario set ships with the repo as `scenarios/npl_scenarios.json`. We
-prefer a lakehouse-uploaded copy at `Files/npl/agent-comparison-questions.json`
-so you can edit it between runs without touching the notebook, and fall back
-to an embedded copy so the notebook is always self-contained.
-"""))
+The scenarios ship with the repo at `scenarios/npl_scenarios.json`. Upload a copy to `Files/npl/agent-comparison-questions.json` in the lakehouse if you want to edit between runs without touching the notebook; otherwise the inline fallback is used."""))
 cells.append(code(f"""import json
 from pathlib import Path
 
 import pandas as pd
 
-LAKEHOUSE_PATH = "/lakehouse/default/Files/npl/agent-comparison-questions.json"
+LAKEHOUSE_QUESTIONS_PATH = "/lakehouse/default/Files/npl/agent-comparison-questions.json"
 
 # Raw JSON string so Python does not mis-parse true/false/null as identifiers.
 INLINE_SCENARIOS_JSON = r\"\"\"{SCENARIOS_JSON}\"\"\"
 
-def load_scenarios():
-    path = Path(LAKEHOUSE_PATH)
+def load_scenarios() -> list[dict]:
+    path = Path(LAKEHOUSE_QUESTIONS_PATH)
     if path.exists():
         print(f"Loaded scenarios from lakehouse: {{path}}")
         with open(path, encoding="utf-8") as f:
             return json.load(f)
-    print("Using inline scenario fallback.")
+    print("Lakehouse file not found; using inline fallback.")
     return json.loads(INLINE_SCENARIOS_JSON)
 
-scenarios = load_scenarios()
-
-df_scenarios = pd.DataFrame({{
-    "question": [s["user_question"] for s in scenarios],
-    "expected_answer": [
-        "Expected metric: " + (s.get("gold_label") or "flag-ambiguity")
-        + ". Tables: " + ", ".join(s.get("required_scope_tables", []))
-        + (". Must mention: " + ", ".join(s.get("ontology_signals", []))
-           if s.get("ontology_signals") else "")
-        for s in scenarios
-    ],
-}})
-print(f"Loaded {{len(df_scenarios)}} scenarios")
-df_scenarios.head(20)
+scenarios: list[dict] = load_scenarios()
+print(f"Loaded {{len(scenarios)}} scenarios")
+pd.DataFrame([
+    {{"scenario_id": s["scenario_id"], "domain": s["domain"], "question": s["user_question"]}}
+    for s in scenarios
+])
 """))
 
-cells.append(md("""## 3b. Disable Spark's Arrow optimization
+# ---------------------------------------------------------------------------
+# 4. Agent wrapper
+# ---------------------------------------------------------------------------
+cells.append(md("""## 4. Agent wrapper
 
-`fabric-data-agent-sdk`'s internal `createDataFrame` call crashes with
-`[CANNOT_MERGE_TYPE] Can not merge type BooleanType and StructType` when
-Arrow optimization is enabled. The fallback path sometimes silently drops
-the freshly-written rows (so summaries / details come back empty for the
-current `eval_id`). Turning Arrow off for this session avoids it.
-"""))
-cells.append(code("""spark.conf.set("spark.sql.execution.arrow.pyspark.enabled", "false")
-spark.catalog.clearCache()
-print("Arrow optimization disabled and Spark catalog cache cleared.")
-"""))
+`ask_agent(agent_name, question)` creates a short-lived thread against the agent, posts the question, waits for the run to complete, and returns the agent's final text reply. It wraps each call in a timeout plus a retry so a single flaky question does not kill the loop."""))
+cells.append(code("""import time
+from fabric.dataagent.client import FabricOpenAI
 
-cells.append(md("""## 4. Configure the evaluation
 
-The critic prompt only receives `{query}` and `{expected_answer}` from the SDK
-(it is posted as a follow-up message in the same thread as the agent's prior
-answer). `{actual_answer}` is **not** a substituted placeholder and would raise
-`KeyError`.
-"""))
-cells.append(code("""NAKED_AGENT_NAME = "NakedAgent"
-ONTOLOGY_AGENT_NAME = "OntologyAgent"
-DATA_AGENT_STAGE = "sandbox"
-WORKSPACE_NAME = None   # keep None when this notebook runs in the agents' own workspace
-
-CRITIC_PROMPT = '''
-You judge whether YOUR PREVIOUS ANSWER in this thread satisfies the expected answer for an NPL-portfolio question.
-
-Rules:
-- Respond 'Yes' if your previous answer cites the expected metric / tables / tokens and avoids the traps listed (e.g. principal_balance vs balance_at_default, all-impaired vs ifrs_stage_3_impaired).
-- Respond 'No' if your answer is missing a required element, chose the wrong metric, refused to answer, or returned an error.
-- Respond 'Unclear' only if your answer is plausibly correct but partial and you cannot verify it from the tokens alone.
-
-Return one word: Yes, No, or Unclear.
-
-Query: {query}
-
-Expected Answer (criteria):
-{expected_answer}
-'''.strip()
-
-print("NAKED_TABLE   =", NAKED_TABLE)
-print("ONTOLOGY_TABLE=", ONTOLOGY_TABLE)
-print("NAKED_AGENT   =", NAKED_AGENT_NAME)
-print("ONTOLOGY_AGENT=", ONTOLOGY_AGENT_NAME)
-print("STAGE         =", DATA_AGENT_STAGE)
-"""))
-
-cells.append(md("""## 5. Evaluate NakedAgent
-
-This writes results into the fresh `NAKED_TABLE` (and its `_steps` companion).
-Expect ~3 min on F16: each of the 18 questions goes through the agent thread + critic.
-"""))
-cells.append(code("""from fabric.dataagent.evaluation import evaluate_data_agent
-
-naked_eval_id = evaluate_data_agent(
-    df_scenarios,
-    NAKED_AGENT_NAME,
-    workspace_name=WORKSPACE_NAME,
-    table_name=NAKED_TABLE,
-    data_agent_stage=DATA_AGENT_STAGE,
-    critic_prompt=CRITIC_PROMPT,
-)
-print(f"NakedAgent evaluation_id: {naked_eval_id}")
-"""))
-
-cells.append(md("## 6. Evaluate OntologyAgent"))
-cells.append(code("""ontology_eval_id = evaluate_data_agent(
-    df_scenarios,
-    ONTOLOGY_AGENT_NAME,
-    workspace_name=WORKSPACE_NAME,
-    table_name=ONTOLOGY_TABLE,
-    data_agent_stage=DATA_AGENT_STAGE,
-    critic_prompt=CRITIC_PROMPT,
-)
-print(f"OntologyAgent evaluation_id: {ontology_eval_id}")
-"""))
-
-cells.append(md("""## 7. Summary metrics (per agent)
-
-If a summary is empty but the corresponding eval_id printed above, wait 20-30 s
-and re-run this cell — the Delta table can take a moment to become visible to
-the Spark catalog.
-"""))
-cells.append(code("""from fabric.dataagent.evaluation import get_evaluation_summary
-
-naked_summary = get_evaluation_summary(NAKED_TABLE, verbose=True)
-ontology_summary = get_evaluation_summary(ONTOLOGY_TABLE, verbose=True)
-
-print("\\n=== NakedAgent summary ===")
-display(naked_summary)
-print("\\n=== OntologyAgent summary ===")
-display(ontology_summary)
-"""))
-
-cells.append(md("## 8. Per-question details"))
-cells.append(code("""from fabric.dataagent.evaluation import get_evaluation_details
-
-naked_details = get_evaluation_details(
-    naked_eval_id, NAKED_TABLE, get_all_rows=True, verbose=False
-)
-ontology_details = get_evaluation_details(
-    ontology_eval_id, ONTOLOGY_TABLE, get_all_rows=True, verbose=False
-)
-
-def _describe(df, label):
-    if df is None:
-        return f"{label}: None (evaluation probably did not complete or the table is missing)"
-    return f"{label}: {df.shape[0]} rows x {df.shape[1]} cols"
-
-print(_describe(naked_details, "naked_details"))
-print(_describe(ontology_details, "ontology_details"))
-
-if naked_details is not None:
-    print("\\nNakedAgent details:")
-    display(naked_details)
-if ontology_details is not None:
-    print("\\nOntologyAgent details:")
-    display(ontology_details)
-"""))
-
-cells.append(md("""## 9. Side-by-side merge
-
-Joins the two details frames on the question text so each row lines up both
-agents' answers.
-"""))
-cells.append(code("""KEEP_COLUMNS = [
-    "question", "expected_answer",
-    "actual_answer",
-    "evaluation_judgement",   # Yes/No/true/false/1/0 verdict from the critic
-    "evaluation_result",      # alternate name in some SDK versions
-    "evaluation_status",
-    "evaluation_message",
-    "thread_url",
-]
-
-def normalize(df, suffix):
-    if df is None:
-        print(f"WARNING: {suffix} details are None. That agent's evaluation didn't produce rows.")
-        return pd.DataFrame(columns=["question", "expected_answer"])
-    keep = [c for c in KEEP_COLUMNS if c in df.columns]
-    out = df[keep].copy()
-    rename = {c: f"{c}_{suffix}" for c in out.columns if c not in ("question", "expected_answer")}
-    return out.rename(columns=rename)
-
-naked_norm = normalize(naked_details, "naked")
-ontology_norm = normalize(ontology_details, "ontology")
-
-print(f"naked rows: {len(naked_norm)}, ontology rows: {len(ontology_norm)}")
-
-if naked_norm.empty and ontology_norm.empty:
-    raise RuntimeError(
-        "Both detail frames are empty. Re-run cells 5 and 6 — "
-        "either the eval IDs expired or no rows landed in the Delta tables."
+def _call_once(agent_name: str, question: str, max_wait: int) -> str:
+    client = FabricOpenAI(artifact_name=agent_name, data_agent_stage=DATA_AGENT_STAGE)
+    assistant = client.beta.assistants.create(model="not-used")
+    thread = client.beta.threads.create()
+    client.beta.threads.messages.create(
+        thread_id=thread.id, role="user", content=question
     )
+    run = client.beta.threads.runs.create_and_poll(
+        thread_id=thread.id, assistant_id=assistant.id, poll_interval_ms=2000
+    )
+    if run.status != "completed":
+        return f"<run {run.status}>"
+    msgs = client.beta.threads.messages.list(thread_id=thread.id, order="asc")
+    pieces: list[str] = []
+    for m in msgs.data:
+        if m.role != "assistant":
+            continue
+        for c in m.content:
+            if c.type == "text":
+                pieces.append(c.text.value)
+    return "\\n".join(p for p in pieces if p).strip() or "<empty>"
 
-side_by_side = pd.merge(naked_norm, ontology_norm, on=["question", "expected_answer"], how="outer")
-display(side_by_side)
+
+def ask_agent(agent_name: str, question: str,
+              max_wait: int = MAX_ANSWER_WAIT_SECONDS,
+              retries: int = RETRIES_PER_QUESTION) -> str:
+    last_exc: Exception | None = None
+    for attempt in range(1, retries + 1):
+        try:
+            return _call_once(agent_name, question, max_wait)
+        except Exception as exc:
+            last_exc = exc
+            if attempt < retries:
+                time.sleep(5 * attempt)
+    return f"<error: {last_exc}>"
 """))
 
-cells.append(md("""## 10. Persist the comparison JSON for `scripts/06_score.py`
+# ---------------------------------------------------------------------------
+# 5. Scoring helper
+# ---------------------------------------------------------------------------
+cells.append(md("""## 5. Scoring helper
 
-Downloads/save the resulting `_agent_comparison.json` to your local
-`nplrisk-ontology/outputs/` folder, then run `python scripts/06_score.py`.
+An answer is marked correct when every token in the scenario's `ontology_signals` list appears in the answer as a case-insensitive substring. Empty signal lists evaluate to `True` (treated as a free-form / ambiguity question with no concrete must-mention tokens; the verdict is produced from the `correct` flag alone)."""))
+cells.append(code("""def score_answer(answer: str, signals: list[str]) -> dict:
+    answer_lc = (answer or "").lower()
+    if not signals:
+        return {"correct": False, "matched": [], "missing": [], "signal_count": 0}
+    matched = [s for s in signals if s.lower() in answer_lc]
+    missing = [s for s in signals if s.lower() not in answer_lc]
+    return {
+        "correct": len(missing) == 0,
+        "matched": matched,
+        "missing": missing,
+        "signal_count": len(signals),
+    }
 """))
+
+# ---------------------------------------------------------------------------
+# 6. Run the benchmark
+# ---------------------------------------------------------------------------
+cells.append(md("""## 6. Run the benchmark
+
+Sends all 18 questions to each agent and scores the answers. Expect ~3 minutes per agent on F16 capacity. If a question fails past the retry budget the cell records the error in `actual_answer_<agent>` and treats it as incorrect — the loop never aborts early."""))
+cells.append(code("""from datetime import datetime
+
+per_question: list[dict] = []
+for i, scenario in enumerate(scenarios, 1):
+    qid = scenario["scenario_id"]
+    question = scenario["user_question"]
+    signals = scenario.get("ontology_signals", [])
+    print(f"[{i}/{len(scenarios)}] {qid} — {question[:70]}")
+
+    naked_answer = ask_agent(NAKED_AGENT_NAME, question)
+    ontology_answer = ask_agent(ONTOLOGY_AGENT_NAME, question)
+
+    naked_score = score_answer(naked_answer, signals)
+    ontology_score = score_answer(ontology_answer, signals)
+
+    per_question.append({
+        "scenario_id": qid,
+        "domain": scenario.get("domain", ""),
+        "question": question,
+        "expected_answer": scenario.get("gold_label", ""),
+        "ontology_signals": signals,
+
+        "actual_answer_naked": naked_answer,
+        "evaluation_judgement_naked": naked_score["correct"],
+        "matched_signals_naked": naked_score["matched"],
+        "missing_signals_naked": naked_score["missing"],
+
+        "actual_answer_ontology": ontology_answer,
+        "evaluation_judgement_ontology": ontology_score["correct"],
+        "matched_signals_ontology": ontology_score["matched"],
+        "missing_signals_ontology": ontology_score["missing"],
+    })
+
+df_results = pd.DataFrame(per_question)
+print(f"\\nCompleted {len(df_results)} scenarios.")
+print(
+    f"NakedAgent correct:    {int(df_results['evaluation_judgement_naked'].sum())}/{len(df_results)}"
+)
+print(
+    f"OntologyAgent correct: {int(df_results['evaluation_judgement_ontology'].sum())}/{len(df_results)}"
+)
+"""))
+
+# ---------------------------------------------------------------------------
+# 7. Side-by-side view
+# ---------------------------------------------------------------------------
+cells.append(md("""## 7. Side-by-side view"""))
+cells.append(code("""display_cols = [
+    "scenario_id", "domain", "question",
+    "evaluation_judgement_naked",
+    "evaluation_judgement_ontology",
+    "actual_answer_naked",
+    "actual_answer_ontology",
+]
+df_results[display_cols]
+"""))
+
+# ---------------------------------------------------------------------------
+# 8. Summary
+# ---------------------------------------------------------------------------
+cells.append(md("""## 8. Summary"""))
+cells.append(code("""def _summary(df: pd.DataFrame, suffix: str) -> dict:
+    col = f"evaluation_judgement_{suffix}"
+    correct = int(df[col].sum())
+    total = len(df)
+    return {
+        "correctCount": correct,
+        "totalQuestions": total,
+        "accuracyPct": round(100 * correct / total, 1) if total else 0.0,
+    }
+
+naked_summary = _summary(df_results, "naked")
+ontology_summary = _summary(df_results, "ontology")
+
+pd.DataFrame({
+    "NakedAgent": naked_summary,
+    "OntologyAgent": ontology_summary,
+})
+"""))
+
+# ---------------------------------------------------------------------------
+# 9. Save JSON report
+# ---------------------------------------------------------------------------
+cells.append(md("""## 9. Save the JSON report
+
+Produces `Files/npl/_agent_comparison.json` on the attached lakehouse. Download it to your local `nplrisk-ontology/outputs/_agent_comparison.json` and run `python scripts/06_score.py` to render the markdown scorecard."""))
 cells.append(code("""import os
-from datetime import datetime
 
-OUTPUT_DIR = "/lakehouse/default/Files/npl"
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 report = {
     "runAtUtc": datetime.utcnow().isoformat() + "Z",
     "stage": DATA_AGENT_STAGE,
+    "scoringMethod": "ontology_signals token match (all tokens must appear)",
     "agents": {
-        "naked": {
-            "name": NAKED_AGENT_NAME,
-            "evaluationId": str(naked_eval_id),
-            "summary": naked_summary.to_dict(orient="records") if naked_summary is not None else [],
-        },
-        "ontology": {
-            "name": ONTOLOGY_AGENT_NAME,
-            "evaluationId": str(ontology_eval_id),
-            "summary": ontology_summary.to_dict(orient="records") if ontology_summary is not None else [],
-        },
+        "naked": {"name": NAKED_AGENT_NAME, **naked_summary},
+        "ontology": {"name": ONTOLOGY_AGENT_NAME, **ontology_summary},
     },
-    "perQuestion": side_by_side.to_dict(orient="records"),
+    "perQuestion": per_question,
 }
 
-out_path = f"{OUTPUT_DIR}/_agent_comparison.json"
-with open(out_path, "w", encoding="utf-8") as f:
+with open(OUTPUT_FILE, "w", encoding="utf-8") as f:
     json.dump(report, f, indent=2, default=str)
-print(f"Saved: {out_path}")
-print(f"Rows: {len(report['perQuestion'])}")
+
+print(f"Saved: {OUTPUT_FILE}")
+print(f"Rows:  {len(report['perQuestion'])}")
+print(f"Naked  {naked_summary['correctCount']}/{naked_summary['totalQuestions']} ({naked_summary['accuracyPct']}%)")
+print(f"Ontology {ontology_summary['correctCount']}/{ontology_summary['totalQuestions']} ({ontology_summary['accuracyPct']}%)")
 """))
 
-cells.append(md("""## What to look for
+# ---------------------------------------------------------------------------
+# 10. What to look for
+# ---------------------------------------------------------------------------
+cells.append(md("""## 10. What to look for
 
-- **Aggregate accuracy** — OntologyAgent should clear NakedAgent on overall `Yes` rate, especially past Q05.
-- **Biggest ontology wins** — Q08 (negation), Q09 (counterparty-group rollup), Q13/Q14/Q15 (governed metrics where NakedAgent picks the wrong column), Q16/Q17 (ambiguity), Q18 (action guardrail).
-- **Expected ties** — Q01, Q02, Q03 (single-table sanity). If OntologyAgent loses any of these, investigate the prompt.
+OntologyAgent should clear NakedAgent on overall accuracy, with the biggest deltas on:
 
-When you're happy with the results, download `Files/npl/_agent_comparison.json` to your local `nplrisk-ontology/outputs/` folder and run `python scripts/06_score.py` for the final scorecard.
+- **Multi-hop traversals** — Q04 (loan/borrower fanout), Q06 (property-backed valuations), Q08 (enforcement + practitioner), Q09 (group rollup), Q10 (cross-country collateral)
+- **Governed metrics** — Q13 (NPE ratio), Q14 (EAD), Q15 (IFRS stage 3); a schema-only agent typically picks the wrong balance column
+- **Negation** — Q12 (loans with no collateral)
+- **Ambiguity & guardrails** — Q16 (bad loans), Q17 (exposure), Q18 (foreclose) — OntologyAgent should flag ambiguity, NakedAgent usually picks one definition silently
+
+Sanity questions Q01–Q03 should be ties. If OntologyAgent loses any of those, investigate its prompt.
+
+Once you are happy with the results, download `Files/npl/_agent_comparison.json` to your local `nplrisk-ontology/outputs/` folder and run `python scripts/06_score.py` for the markdown scorecard.
 """))
 
 
