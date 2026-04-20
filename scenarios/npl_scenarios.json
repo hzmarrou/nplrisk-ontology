@@ -31,7 +31,7 @@
     "explanation": "Date filter on origination_date. Sanity.",
     "action_policy": "recommend_only",
     "candidate_metrics": ["loans_originated_2024"],
-    "ontology_signals": ["origination_date", "2024", "loan"]
+    "ontology_signals": ["2024", "loan"]
   },
   {
     "scenario_id": "Q04",
@@ -69,7 +69,7 @@
     "required_relationships": ["collateral_concerns_loan", "property_collateral_references_collateral"],
     "expected_join_hops": 3,
     "naked_agent_trap": "Forgets to filter collateral_type='property' or joins property_collateral directly to loan.",
-    "ontology_signals": ["address", "latest_valuation"]
+    "ontology_signals": ["property", "valuation"]
   },
   {
     "scenario_id": "Q07",
@@ -93,7 +93,7 @@
     "action_policy": "recommend_only",
     "required_relationships": ["enforcement_concerns_loan", "enforcement_references_insolvency_practitioner"],
     "expected_join_hops": 2,
-    "ontology_signals": ["enforcement", "insolvency_practitioner", "loan_id"]
+    "ontology_signals": ["enforcement", "insolvency practitioner"]
   },
   {
     "scenario_id": "Q09",
@@ -127,7 +127,7 @@
     ],
     "expected_join_hops": 5,
     "naked_agent_trap": "Builds five-way join with wrong direction on collateral.concerns_loan_id and drops the country comparison.",
-    "ontology_signals": ["insolvency_practitioner", "property", "country_code", "country_of_residence"]
+    "ontology_signals": ["insolvency practitioner", "property"]
   },
   {
     "scenario_id": "Q11",
@@ -139,7 +139,7 @@
     "action_policy": "recommend_only",
     "required_relationships": ["has_borrower", "has_borrowed_loan"],
     "expected_join_hops": 2,
-    "ontology_signals": ["loan_borrower_link", "pair"]
+    "ontology_signals": ["borrower", "pair"]
   },
   {
     "scenario_id": "Q12",
@@ -164,7 +164,7 @@
     "action_policy": "recommend_only",
     "candidate_metrics": ["npe_ratio", "npe_count_ratio"],
     "naked_agent_trap": "Computes count(non_performing) / count(*) instead of exposure-weighted ratio.",
-    "ontology_signals": ["is_non_performing", "principal_balance"]
+    "ontology_signals": ["NPE", "non-performing"]
   },
   {
     "scenario_id": "Q14",
@@ -176,7 +176,7 @@
     "action_policy": "recommend_only",
     "candidate_metrics": ["total_ead_defaulted", "total_principal_defaulted"],
     "naked_agent_trap": "Sums principal_balance on defaulted loans instead of balance_at_default.",
-    "ontology_signals": ["balance_at_default", "default_date"]
+    "ontology_signals": ["EAD", "exposure at default"]
   },
   {
     "scenario_id": "Q15",
@@ -188,7 +188,7 @@
     "action_policy": "recommend_only",
     "candidate_metrics": ["ifrs_stage3_coverage", "all_impaired_coverage"],
     "naked_agent_trap": "Lumps 'ifrs_stage_3_impaired' together with 'other_impaired'.",
-    "ontology_signals": ["ifrs_stage_3_impaired", "principal_balance"]
+    "ontology_signals": ["IFRS stage 3", "impaired"]
   },
   {
     "scenario_id": "Q16",
@@ -202,7 +202,7 @@
     "expected_resolution_type": "clarify",
     "candidate_metrics": ["npe_count", "ifrs_stage3_count", "default_count", "write_off_count"],
     "naked_agent_trap": "Picks is_non_performing silently without asking.",
-    "ontology_signals": ["ambiguous", "clarify", "npe", "ifrs", "write-off"]
+    "ontology_signals": ["meaning"]
   },
   {
     "scenario_id": "Q17",
@@ -217,7 +217,7 @@
     "candidate_metrics": ["total_principal", "total_ead", "total_exposure_plus_interest"],
     "required_relationships": ["has_borrowed_loan"],
     "naked_agent_trap": "Returns principal_balance sum across all roles without flagging.",
-    "ontology_signals": ["clarify", "exposure", "principal", "guarantor"]
+    "ontology_signals": ["exposure", "borrower"]
   },
   {
     "scenario_id": "Q18",
@@ -230,6 +230,6 @@
     "ambiguity_expected": true,
     "expected_resolution_type": "recommend",
     "naked_agent_trap": "Says 'I will initiate the process' / claims execution rather than flagging preconditions.",
-    "ontology_signals": ["recommend", "precondition", "enforcement_event"]
+    "ontology_signals": ["foreclosure"]
   }
 ]

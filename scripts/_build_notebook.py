@@ -221,12 +221,30 @@ def ask_agent(agent_name: str, question: str,
 cells.append(md("""## 5. Scoring helper
 
 An answer is marked correct when every token in the scenario's `ontology_signals` list appears in the answer as a case-insensitive substring. Empty signal lists evaluate to `True` (treated as a free-form / ambiguity question with no concrete must-mention tokens; the verdict is produced from the `correct` flag alone)."""))
-cells.append(code("""def score_answer(answer: str, signals: list[str]) -> dict:
-    answer_lc = (answer or "").lower()
+cells.append(code("""import re
+
+
+def _normalize(s: str) -> str:
+    \"\"\"Fold separators + whitespace so 'write_off_flag' matches 'write-off flag'.\"\"\"
+    s = (s or "").lower()
+    # underscores / hyphens / slashes -> space
+    s = re.sub(r"[_\\-/]+", " ", s)
+    # collapse runs of whitespace
+    s = re.sub(r"\\s+", " ", s)
+    return s.strip()
+
+
+def score_answer(answer: str, signals: list[str]) -> dict:
     if not signals:
         return {"correct": False, "matched": [], "missing": [], "signal_count": 0}
-    matched = [s for s in signals if s.lower() in answer_lc]
-    missing = [s for s in signals if s.lower() not in answer_lc]
+    answer_norm = _normalize(answer)
+    matched: list[str] = []
+    missing: list[str] = []
+    for s in signals:
+        if _normalize(s) in answer_norm:
+            matched.append(s)
+        else:
+            missing.append(s)
     return {
         "correct": len(missing) == 0,
         "matched": matched,
