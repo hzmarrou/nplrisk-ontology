@@ -67,23 +67,35 @@ cells: list[dict] = []
 # ---------------------------------------------------------------------------
 cells.append(md("""# NakedAgent vs OntologyAgent — NPL risk benchmark
 
-Side-by-side evaluation of two Fabric Data Agents — one grounded in an NPL ontology (`OntologyAgent`), one wired only to the lakehouse tables (`NakedAgent`) — on 18 scenarios spanning sanity, multi-hop traversal, graph reasoning, governed metrics, ambiguity, and action guardrails.
+Side-by-side evaluation of two Fabric Data Agents on 18 NPL-risk scenarios (sanity, multi-hop traversal, graph, governed metrics, ambiguity, action guardrails).
 
-## How it works
+## Architecture — two different query engines
+
+`scripts/05_setup_agents.py` wires the two agents so they each go through exactly one data surface:
+
+| Agent | Data source | Query engine | What it "sees" |
+|---|---|---|---|
+| `NakedAgent` | Lakehouse Delta tables | Spark SQL | 13 raw tables with `_id` FK columns |
+| `OntologyAgent` | Ontology (graph model) | GQL | 13 entity types + 17 typed relationships |
+
+The ontology's graph model is populated by `scripts/04_refresh_and_validate.py`, which materialises nodes and edges from the Lakehouse tables via the bindings + contextualizations. Both agents see the *same underlying data*; they just traverse it through different engines.
+
+## How the notebook works
 
 For each scenario the notebook:
 
 1. Sends the question to `NakedAgent` via `FabricOpenAI` and captures the final text reply
 2. Does the same for `OntologyAgent`
-3. Scores each answer with a strict token check — every `ontology_signals` token in the scenario must appear in the response (case-insensitive substring) for the answer to count as correct
+3. Scores each answer with a deterministic token check — every `ontology_signals` token in the scenario must appear in the response (case + separator insensitive) for the answer to count as correct
 4. Emits a side-by-side DataFrame and a JSON report to `Files/npl/_agent_comparison.json` on the attached lakehouse
 
-The scoring is deterministic and does not depend on any LLM-judge: every run on the same agents produces the same scorecard.
+Scoring is reproducible: the same agents + scenarios produce the same scorecard every time.
 
 ## Prerequisites
 
 - **Default lakehouse must be attached** — left sidebar → Lakehouses → + Add → star it. The notebook writes the report under `Files/npl/` on this lakehouse.
 - `NakedAgent` and `OntologyAgent` already provisioned in this workspace (`scripts/05_setup_agents.py` does this outside of Fabric).
+- **The graph model must be refreshed since the last lakehouse change.** `OntologyAgent` queries the graph, not the lakehouse directly — stale graph = stale answers. If you just loaded data, run `scripts/04_refresh_and_validate.py` first or click **Refresh now** on the graph model in the Fabric UI.
 - The notebook is self-contained — if `Files/npl/agent-comparison-questions.json` is not present in the lakehouse, an inline copy of the 18 scenarios is used as a fallback.
 """))
 
@@ -374,14 +386,24 @@ print(f"Ontology {ontology_summary['correctCount']}/{ontology_summary['totalQues
 # ---------------------------------------------------------------------------
 cells.append(md("""## 10. What to look for
 
-OntologyAgent should clear NakedAgent on overall accuracy, with the biggest deltas on:
+Because `OntologyAgent` now speaks GQL against the graph and `NakedAgent` speaks SQL against Delta tables, they are two genuinely different query engines. Expect the deltas to reflect that:
 
-- **Multi-hop traversals** — Q04 (loan/borrower fanout), Q06 (property-backed valuations), Q08 (enforcement + practitioner), Q09 (group rollup), Q10 (cross-country collateral)
-- **Governed metrics** — Q13 (NPE ratio), Q14 (EAD), Q15 (IFRS stage 3); a schema-only agent typically picks the wrong balance column
-- **Negation** — Q12 (loans with no collateral)
-- **Ambiguity & guardrails** — Q16 (bad loans), Q17 (exposure), Q18 (foreclose) — OntologyAgent should flag ambiguity, NakedAgent usually picks one definition silently
+**Where OntologyAgent should win**
 
-Sanity questions Q01–Q03 should be ties. If OntologyAgent loses any of those, investigate its prompt.
+- **Multi-hop traversals** — Q04 (loan/borrower fanout), Q06 (property-backed valuations), Q08 (enforcement + practitioner), Q09 (group rollup), Q10 (cross-country collateral). GQL expresses multi-hop edge traversal naturally; SQL has to chain joins and tends to drop a side.
+- **Governed metrics with a semantic trap** — Q13 (NPE ratio), Q14 (EAD), Q15 (IFRS stage 3). A schema-only agent commonly picks the wrong balance column (`principal_balance` vs `balance_at_default`) or lumps `ifrs_stage_3_impaired` with `other_impaired`.
+- **Negation / anti-joins** — Q12 (loans with no collateral). Graph `MATCH NOT` patterns are clearer than SQL `LEFT JOIN ... IS NULL`.
+- **Ambiguity & guardrails** — Q16 (bad loans), Q17 (exposure), Q18 (foreclose). The ontology agent has richer semantic context to flag multiple valid definitions; the schema-only agent usually picks one silently.
+
+**Where NakedAgent may win or tie**
+
+- **Sanity questions (Q01–Q03)** — single-table SQL aggregations are trivial. OntologyAgent should tie here; if it loses, the GQL group-by workaround in the instructions is worth checking.
+- **Heavy numeric aggregation** — GQL aggregations are a documented weak spot in Fabric ontology; the agent instructions include the "Support group by in GQL" nudge from the Fabric tutorial to mitigate, but edge cases persist.
+
+**Operational reminders**
+
+- If `OntologyAgent` returns counts that don't match `NakedAgent`'s, first check whether the graph was refreshed since the last lakehouse write. The graph is not live-bound.
+- Both agents answer from the *same data*, so a gap from knowing which column to use is a genuine ontology win; a gap from the engine's query capability is a platform artefact, not a semantic win.
 
 Once you are happy with the results, download `Files/npl/_agent_comparison.json` to your local `nplrisk-ontology/outputs/` folder and run `python scripts/06_score.py` for the markdown scorecard.
 """))
