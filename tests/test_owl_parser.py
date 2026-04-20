@@ -123,3 +123,70 @@ def test_flatten_hierarchy_drops_empty_subclasses(ontology: ParsedOntology) -> N
 def test_xsd_to_fabric_value_type(xsd: str, fabric: str) -> None:
     prop = DatatypeProperty(iri="x", name="x", domain_iri="x", range_xsd=xsd)
     assert prop.fabric_value_type == fabric
+
+
+# ---------------------------------------------------------------------------
+# OWL-lite contract — unsupported constructs must warn (R20)
+# ---------------------------------------------------------------------------
+
+
+def test_parse_owl_warns_on_unsupported_constructs(tmp_path: Path) -> None:
+    """An ontology that uses owl:Restriction / unionOf / TransitiveProperty
+    must emit a UserWarning so the maintainer knows those axioms were
+    dropped during the flattening."""
+    import warnings
+
+    owl_xml = """<?xml version="1.0"?>
+<rdf:RDF xmlns="http://example.org/o#"
+         xml:base="http://example.org/o"
+         xmlns:owl="http://www.w3.org/2002/07/owl#"
+         xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+         xmlns:rdfs="http://www.w3.org/2000/01/rdf-schema#"
+         xmlns:xsd="http://www.w3.org/2001/XMLSchema#">
+  <owl:Ontology rdf:about="http://example.org/o"/>
+  <owl:Class rdf:about="http://example.org/o#A"/>
+  <owl:Class rdf:about="http://example.org/o#B">
+    <rdfs:subClassOf>
+      <owl:Restriction>
+        <owl:onProperty rdf:resource="http://example.org/o#p"/>
+        <owl:someValuesFrom rdf:resource="http://example.org/o#A"/>
+      </owl:Restriction>
+    </rdfs:subClassOf>
+  </owl:Class>
+  <owl:ObjectProperty rdf:about="http://example.org/o#p">
+    <rdf:type rdf:resource="http://www.w3.org/2002/07/owl#TransitiveProperty"/>
+  </owl:ObjectProperty>
+</rdf:RDF>
+"""
+    owl_path = tmp_path / "mini.owl"
+    owl_path.write_text(owl_xml, encoding="utf-8")
+
+    with warnings.catch_warnings(record=True) as captured:
+        warnings.simplefilter("always")
+        parse_owl(owl_path)
+
+    messages = [str(w.message) for w in captured]
+    assert any("owl:Restriction" in m for m in messages), messages
+    assert any("owl:TransitiveProperty" in m for m in messages), messages
+
+
+def test_parse_owl_suppresses_warnings_when_disabled(tmp_path: Path) -> None:
+    import warnings
+
+    owl_xml = """<?xml version="1.0"?>
+<rdf:RDF xmlns:owl="http://www.w3.org/2002/07/owl#"
+         xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+  <owl:Ontology rdf:about="http://example.org/o"/>
+  <owl:ObjectProperty rdf:about="http://example.org/o#p">
+    <rdf:type rdf:resource="http://www.w3.org/2002/07/owl#TransitiveProperty"/>
+  </owl:ObjectProperty>
+</rdf:RDF>
+"""
+    owl_path = tmp_path / "mini2.owl"
+    owl_path.write_text(owl_xml, encoding="utf-8")
+
+    with warnings.catch_warnings(record=True) as captured:
+        warnings.simplefilter("always")
+        parse_owl(owl_path, warn_on_unsupported=False)
+
+    assert not any("OWL parser" in str(w.message) for w in captured)
