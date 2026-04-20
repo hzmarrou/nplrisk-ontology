@@ -65,6 +65,8 @@ cells.append(md("## 1. Install the SDK"))
 cells.append(code("%pip install -U fabric-data-agent-sdk pandas"))
 
 cells.append(md("## 2. Load the scenario set"))
+# Embed the scenarios file as a raw JSON string and parse at runtime so the
+# JSON literals (true/false/null) don't collide with Python's True/False/None.
 cells.append(code(f"""import json
 from pathlib import Path
 
@@ -72,7 +74,7 @@ import pandas as pd
 
 LAKEHOUSE_PATH = "/lakehouse/default/Files/npl/agent-comparison-questions.json"
 
-INLINE_SCENARIOS = {SCENARIOS_JSON}
+INLINE_SCENARIOS_JSON = r\"\"\"{SCENARIOS_JSON}\"\"\"
 
 def load_scenarios():
     path = Path(LAKEHOUSE_PATH)
@@ -81,7 +83,7 @@ def load_scenarios():
         with open(path, encoding="utf-8") as f:
             return json.load(f)
     print("Using inline scenario fallback.")
-    return INLINE_SCENARIOS
+    return json.loads(INLINE_SCENARIOS_JSON)
 
 scenarios = load_scenarios()
 
