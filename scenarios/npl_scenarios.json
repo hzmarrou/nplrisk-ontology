@@ -84,7 +84,8 @@
     "ontology_signals": [
       "co_borrower",
       "role_type"
-    ]
+    ],
+    "naked_agent_trap": "Aggregates loan_borrower_link rows without filtering role_type first, inflating co_borrower counts with primary/guarantor rows."
   },
   {
     "scenario_id": "Q06",
@@ -127,7 +128,8 @@
     "ontology_signals": [
       "individual",
       "forbearance"
-    ]
+    ],
+    "naked_agent_trap": "Drops the borrower_type='individual' filter and returns any borrower with a forbearance event."
   },
   {
     "scenario_id": "Q08",
@@ -149,7 +151,8 @@
     "ontology_signals": [
       "enforcement",
       "insolvency practitioner"
-    ]
+    ],
+    "naked_agent_trap": "Returns enforcement events but forgets the insolvency_practitioner join."
   },
   {
     "scenario_id": "Q09",
@@ -222,7 +225,8 @@
     "ontology_signals": [
       "borrower",
       "pair"
-    ]
+    ],
+    "naked_agent_trap": "Computes borrower-loan counts without deduplicating role_type, counting the same pair twice."
   },
   {
     "scenario_id": "Q12",
