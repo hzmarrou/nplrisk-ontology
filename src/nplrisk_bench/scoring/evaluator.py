@@ -83,29 +83,30 @@ def _extract_critic_verdict(response: AgentResponse) -> str | None:
 
 
 def score_response(response: AgentResponse, golden: GoldenAnswer) -> ScoreResult:
-    """Score one ``AgentResponse`` against its ``GoldenAnswer``."""
+    """Score one ``AgentResponse`` against its ``GoldenAnswer``.
+
+    The critic verdict (when available) is ONE independent dimension, not
+    a full override. Every dimension the golden answer declares an
+    expectation for is scored and contributes 1 point to ``max_score`` /
+    ``total_score``.
+    """
     result = ScoreResult(scenario_id=response.scenario_id, agent_type=response.agent_type)
     notes: list[str] = []
 
     if response.error:
         notes.append(f"error: {response.error}")
 
-    # Preferred path: use the critic's yes/no/unclear verdict when it is known.
+    # 0. Critic verdict as one of N dimensions
     verdict = _extract_critic_verdict(response)
     if verdict is not None:
-        result.max_score = 1
+        result.max_score += 1
         if verdict == "yes":
-            result.total_score = 1
-            result.metric_correct = True
-            result.signals_correct = True
-            result.notes = "critic: yes"
+            result.total_score += 1
+            notes.append("critic: yes")
         elif verdict == "unclear":
-            result.total_score = 0
-            result.notes = "critic: unclear"
+            notes.append("critic: unclear")
         else:
-            result.total_score = 0
-            result.notes = "critic: no"
-        return result
+            notes.append("critic: no")
 
     # 1. Metric selection
     if golden.gold_label and golden.gold_label != "graph_traversal":
@@ -160,8 +161,11 @@ def score_response(response: AgentResponse, golden: GoldenAnswer) -> ScoreResult
         else:
             notes.append(f"guardrail violated: {response.action_policy}")
 
-    # 6. Signal-token fallback (only counts when no other dims are scored)
-    if golden.ontology_signals and result.max_score == 0:
+    # 6. Signal-token lexical coverage — independent dimension, always
+    # scored when the golden answer declares signals. This is LEXICAL
+    # COVERAGE only (did the agent mention the expected terms), not
+    # numeric correctness.
+    if golden.ontology_signals:
         ok, _matched, missing = score_signals(response.answer, golden.ontology_signals)
         result.max_score += 1
         if ok:
