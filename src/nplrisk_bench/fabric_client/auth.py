@@ -12,18 +12,33 @@ import threading
 import time
 
 import requests
-from requests.exceptions import ConnectionError as RequestsConnectionError, Timeout
+from requests.exceptions import ConnectionError as RequestsConnectionError, HTTPError, Timeout
 
 from .config import FabricConfig
 
 _SCOPE = "https://api.fabric.microsoft.com/.default"
 
 _lock = threading.Lock()
-_cache: dict[tuple[str, str], tuple[str, float]] = {}
+# Cache value: (token, expires_at_unix, refresh_margin_seconds)
+_cache: dict[tuple[str, str], tuple[str, float, float]] = {}
 
 
-def _fetch_token(cfg: FabricConfig, attempts: int = 3) -> tuple[str, float]:
-    """POST to the AAD token endpoint and return (token, expires_at_unix)."""
+def _is_retryable_http(exc: HTTPError) -> bool:
+    """AAD 5xx and 429 are transient; 4xx authz failures are not."""
+    if exc.response is None:
+        return False
+    code = exc.response.status_code
+    return code == 429 or (500 <= code < 600)
+
+
+def _fetch_token(cfg: FabricConfig, attempts: int = 3) -> tuple[str, float, float]:
+    """POST to the AAD token endpoint.
+
+    Returns ``(token, expires_at_unix, refresh_margin_seconds)``. The
+    margin is 15% of the advertised TTL (minimum 60s), so the cache
+    decides when to refresh based on the server's reported lifetime
+    rather than a hard-coded 1-hour assumption.
+    """
     url = f"https://login.microsoftonline.com/{cfg.tenant_id}/oauth2/v2.0/token"
     data = {
         "grant_type": "client_credentials",
@@ -38,20 +53,27 @@ def _fetch_token(cfg: FabricConfig, attempts: int = 3) -> tuple[str, float]:
             resp.raise_for_status()
             body = resp.json()
             ttl = int(body.get("expires_in", 3600))
-            return body["access_token"], time.time() + ttl
+            margin = max(60.0, 0.15 * ttl)
+            return body["access_token"], time.time() + ttl, margin
         except (RequestsConnectionError, Timeout) as exc:
             last_exc = exc
-            if i == attempts:
+        except HTTPError as exc:
+            last_exc = exc
+            if not _is_retryable_http(exc):
                 raise
-            time.sleep(2 * i)
+        if i == attempts:
+            raise last_exc  # type: ignore[misc]
+        time.sleep(2 * i)
     raise RuntimeError(f"unreachable; last_exc={last_exc}")  # pragma: no cover
 
 
 def get_token(config: FabricConfig | None = None, *, force_refresh: bool = False) -> str:
-    """Return a bearer token, reusing a cached one while it still has >15% of life.
+    """Return a bearer token, reusing a cached one while the refresh margin hasn't elapsed.
 
-    Thread-safe. On a transient network error, retries up to 3 times with
-    exponential backoff before surfacing the exception.
+    Thread-safe. The refresh margin is derived from the AAD-reported
+    ``expires_in``, not a hard-coded TTL. On a transient network or
+    5xx/429 error from AAD, retries up to 3 times with backoff before
+    surfacing the exception.
     """
     cfg = config or FabricConfig.from_env()
     key = (cfg.tenant_id, cfg.client_id)
@@ -60,13 +82,12 @@ def get_token(config: FabricConfig | None = None, *, force_refresh: bool = False
     with _lock:
         cached = _cache.get(key)
         if cached and not force_refresh:
-            token, expires_at = cached
-            # Refresh when less than 15% of lifetime (or 5 min) remains
-            if expires_at - now > max(300, 0.15 * 3600):
+            token, expires_at, margin = cached
+            if expires_at - now > margin:
                 return token
 
-        token, expires_at = _fetch_token(cfg)
-        _cache[key] = (token, expires_at)
+        token, expires_at, margin = _fetch_token(cfg)
+        _cache[key] = (token, expires_at, margin)
         return token
 
 

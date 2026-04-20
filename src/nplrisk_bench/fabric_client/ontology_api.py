@@ -35,31 +35,92 @@ class OntologyClient:
             url = f"{url}/{action}"
         return url
 
-    def _handle_lro(self, response: requests.Response, poll_interval: int = 5) -> dict | None:
-        """Poll a long-running operation until it succeeds, then fetch the result."""
+    def _handle_lro(
+        self,
+        response: requests.Response,
+        poll_interval: int = 5,
+        *,
+        max_wait_seconds: int = 1800,
+        network_retries: int = 3,
+    ) -> dict | None:
+        """Poll a long-running operation until it reaches a terminal state.
+
+        Hardens over the Fabric LRO contract:
+          * honours ``Retry-After`` from every poll response, not just the
+            initial 202
+          * retries transient 5xx / network errors on the poll endpoint
+            up to ``network_retries`` times with exponential backoff
+          * enforces a wall-clock ``max_wait_seconds`` cap so a wedged
+            LRO cannot block the script forever
+        """
         if response.status_code != 202:
             return None
         operation_url = response.headers.get("Location")
+        if not operation_url:
+            raise RuntimeError("LRO: 202 response lacked Location header")
         retry_after = int(response.headers.get("Retry-After", poll_interval))
         print(f"  LRO accepted - polling {operation_url}")
+
+        deadline = time.time() + max_wait_seconds
         while True:
-            time.sleep(retry_after)
-            poll = requests.get(operation_url, headers=get_headers(self.config))
-            poll.raise_for_status()
-            body = poll.json()
-            status = body.get("status", "Unknown")
+            if time.time() >= deadline:
+                raise TimeoutError(
+                    f"LRO exceeded {max_wait_seconds}s timeout: {operation_url}"
+                )
+            sleep_for = min(retry_after, max(1, int(deadline - time.time())))
+            time.sleep(sleep_for)
+
+            poll = self._poll_once(operation_url, network_retries)
+            status = poll.get("status", "Unknown")
             print(f"  LRO status: {status}")
             if status == "Succeeded":
-                result_resp = requests.get(f"{operation_url}/result", headers=get_headers(self.config))
+                result_resp = requests.get(
+                    f"{operation_url}/result",
+                    headers=get_headers(self.config),
+                    timeout=60,
+                )
                 if result_resp.status_code == 200:
                     return result_resp.json()
-                return body
+                return poll
             if status in ("Failed", "Cancelled"):
-                error = body.get("error", {})
+                error = poll.get("error", {})
                 raise RuntimeError(
                     f"LRO {status}: {error.get('errorCode', 'unknown')} - "
-                    f"{error.get('message', body)}"
+                    f"{error.get('message', poll)}"
                 )
+            # Refresh retry_after for the next iteration from the most
+            # recent poll headers; fall back to the initial value.
+            retry_after = int(poll.get("_retry_after", retry_after))
+
+    def _poll_once(self, operation_url: str, network_retries: int) -> dict:
+        """GET the LRO status, retrying transient failures."""
+        last_exc: Exception | None = None
+        for i in range(1, network_retries + 1):
+            try:
+                poll = requests.get(
+                    operation_url,
+                    headers=get_headers(self.config),
+                    timeout=60,
+                )
+                if poll.status_code in (429, 500, 502, 503, 504) and i < network_retries:
+                    time.sleep(2 * i)
+                    continue
+                poll.raise_for_status()
+                body = poll.json()
+                # Surface Retry-After so _handle_lro can pick it up.
+                ra = poll.headers.get("Retry-After")
+                if ra:
+                    try:
+                        body["_retry_after"] = int(ra)
+                    except ValueError:
+                        pass
+                return body
+            except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as exc:
+                last_exc = exc
+                if i == network_retries:
+                    raise
+                time.sleep(2 * i)
+        raise RuntimeError(f"unreachable; last_exc={last_exc}")  # pragma: no cover
 
     # -- CRUD ------------------------------------------------------------
 
