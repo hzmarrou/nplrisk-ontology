@@ -30,8 +30,6 @@ class Scenario:
     explanation: str = ""
     action_policy: str = "recommend_only"
     ambiguity_expected: bool = False
-    expected_resolution_type: str = "allow"
-    candidate_metrics: list[str] = field(default_factory=list)
     required_relationships: list[str] = field(default_factory=list)
     expected_join_hops: int = 0
     naked_agent_trap: str = ""
@@ -51,10 +49,8 @@ class GoldenAnswer:
 
     scenario_id: str
     gold_label: str = ""
-    expected_resolution_type: str = "allow"
     ambiguity_expected: bool = False
     action_policy: str = "recommend_only"
-    candidate_metrics: list[str] = field(default_factory=list)
     required_scope_tables: list[str] = field(default_factory=list)
     required_relationships: list[str] = field(default_factory=list)
     ontology_signals: list[str] = field(default_factory=list)
@@ -92,10 +88,8 @@ def golden_answers_from_scenarios(scenarios: list[Scenario]) -> dict[str, Golden
         s.scenario_id: GoldenAnswer(
             scenario_id=s.scenario_id,
             gold_label=s.gold_label,
-            expected_resolution_type=s.expected_resolution_type,
             ambiguity_expected=s.ambiguity_expected,
             action_policy=s.action_policy,
-            candidate_metrics=list(s.candidate_metrics),
             required_scope_tables=list(s.required_scope_tables),
             required_relationships=list(s.required_relationships),
             ontology_signals=list(s.ontology_signals),
