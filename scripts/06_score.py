@@ -32,8 +32,10 @@ and produces both a JSON result and a markdown scorecard.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -156,12 +158,23 @@ def main() -> None:
             {k: getattr(r, k) for k in ("scenario_id", "agent_type", "metric_correct",
                                           "tables_correct", "relationships_correct",
                                           "ambiguity_detected", "guardrail_respected",
-                                          "signals_correct", "total_score", "max_score",
-                                          "notes")}
+                                          "signals_correct", "numeric_correct",
+                                          "total_score", "max_score", "notes")}
             for r in results
         ]
 
+    # Version-lock the scorecard to the exact scenarios payload that
+    # produced it. Re-running the scorer against a different scenarios
+    # file changes the sha256; downstream consumers can detect drift.
+    scenarios_bytes = args.scenarios.read_bytes()
+    scenarios_sha256 = hashlib.sha256(scenarios_bytes).hexdigest()
+    scenarios_payload = json.loads(scenarios_bytes.decode("utf-8"))
+
     args.json_out.write_text(json.dumps({
+        "generatedAtUtc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "scenariosPath": str(args.scenarios),
+        "scenariosSha256": scenarios_sha256,
+        "scenariosPayload": scenarios_payload,
         "naked": _dump(naked_scores),
         "ontology": _dump(onto_scores),
     }, indent=2), encoding="utf-8")
