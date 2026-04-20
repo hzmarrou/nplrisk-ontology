@@ -50,18 +50,43 @@ from nplrisk_bench.scoring import (  # noqa: E402
 from nplrisk_bench.scoring.evaluator import infer_response_metadata  # noqa: E402
 
 
+_POSITIVE_VERDICTS = {"yes", "true", "1"}
+_NEGATIVE_VERDICTS = {"no", "false", "0"}
+
+
+def _verdict_of(row: dict, suffix: str) -> str:
+    """Return 'yes' / 'no' / 'unclear' / '' based on the critic's judgement."""
+    for col in (f"evaluation_judgement_{suffix}",
+                f"evaluation_result_{suffix}",
+                f"evaluation_status_{suffix}"):
+        raw = (row.get(col) or "")
+        if not raw:
+            continue
+        s = str(raw).strip().lower()
+        if s in _POSITIVE_VERDICTS:
+            return "yes"
+        if s in _NEGATIVE_VERDICTS:
+            return "no"
+        if s == "unclear":
+            return "unclear"
+    return ""
+
+
 def _build_response(sid: str, agent_type: str, row: dict) -> AgentResponse:
     suffix = agent_type  # "naked" or "ontology"
     ans = row.get(f"actual_answer_{suffix}", "") or ""
-    verdict = (row.get(f"evaluation_result_{suffix}", "") or "").lower()
-    return AgentResponse(
+    # Keep the raw verdict in a hidden marker so score_response can prefer it
+    # over the heuristic pipeline when it is present.
+    resp = AgentResponse(
         scenario_id=sid,
         agent_type=agent_type,
         answer=ans,
         reasoning=ans,
         sql_or_gql=ans,
-        error=None if verdict in ("yes", "true", "no", "false", "unclear", "") else verdict,
+        error=None,
     )
+    resp.reasoning = f"__critic_verdict__={_verdict_of(row, suffix)}\n{ans}"
+    return resp
 
 
 def main() -> None:

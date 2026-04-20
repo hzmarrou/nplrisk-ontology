@@ -238,11 +238,21 @@ cells.append(md("""## 9. Side-by-side merge
 Joins the two details frames on the question text so each row lines up both
 agents' answers.
 """))
-cells.append(code("""def normalize(df, suffix):
+cells.append(code("""KEEP_COLUMNS = [
+    "question", "expected_answer",
+    "actual_answer",
+    "evaluation_judgement",   # Yes/No/true/false/1/0 verdict from the critic
+    "evaluation_result",      # alternate name in some SDK versions
+    "evaluation_status",
+    "evaluation_message",
+    "thread_url",
+]
+
+def normalize(df, suffix):
     if df is None:
         print(f"WARNING: {suffix} details are None. That agent's evaluation didn't produce rows.")
         return pd.DataFrame(columns=["question", "expected_answer"])
-    keep = [c for c in ["question", "expected_answer", "actual_answer", "evaluation_result", "thread_url"] if c in df.columns]
+    keep = [c for c in KEEP_COLUMNS if c in df.columns]
     out = df[keep].copy()
     rename = {c: f"{c}_{suffix}" for c in out.columns if c not in ("question", "expected_answer")}
     return out.rename(columns=rename)

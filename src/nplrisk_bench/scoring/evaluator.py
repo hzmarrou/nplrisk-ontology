@@ -67,6 +67,21 @@ def score_signals(answer: str, signals: list[str]) -> tuple[bool, list[str], lis
     return len(missing) == 0, matched, missing
 
 
+def _extract_critic_verdict(response: AgentResponse) -> str | None:
+    """Parse ``__critic_verdict__=yes/no/unclear`` out of response.reasoning.
+
+    Callers that know the upstream critic's judgement (e.g. ``06_score.py``
+    reading a notebook JSON) can stash it in ``response.reasoning`` so the
+    scorer prefers it over heuristic extraction.
+    """
+    text = response.reasoning or ""
+    marker = "__critic_verdict__="
+    if marker not in text:
+        return None
+    line = text.split(marker, 1)[1].splitlines()[0].strip().lower()
+    return line if line in {"yes", "no", "unclear"} else None
+
+
 def score_response(response: AgentResponse, golden: GoldenAnswer) -> ScoreResult:
     """Score one ``AgentResponse`` against its ``GoldenAnswer``."""
     result = ScoreResult(scenario_id=response.scenario_id, agent_type=response.agent_type)
@@ -74,6 +89,23 @@ def score_response(response: AgentResponse, golden: GoldenAnswer) -> ScoreResult
 
     if response.error:
         notes.append(f"error: {response.error}")
+
+    # Preferred path: use the critic's yes/no/unclear verdict when it is known.
+    verdict = _extract_critic_verdict(response)
+    if verdict is not None:
+        result.max_score = 1
+        if verdict == "yes":
+            result.total_score = 1
+            result.metric_correct = True
+            result.signals_correct = True
+            result.notes = "critic: yes"
+        elif verdict == "unclear":
+            result.total_score = 0
+            result.notes = "critic: unclear"
+        else:
+            result.total_score = 0
+            result.notes = "critic: no"
+        return result
 
     # 1. Metric selection
     if golden.gold_label and golden.gold_label != "graph_traversal":
