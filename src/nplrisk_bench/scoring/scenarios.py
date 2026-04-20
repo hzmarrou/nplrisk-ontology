@@ -36,6 +36,13 @@ class Scenario:
     expected_join_hops: int = 0
     naked_agent_trap: str = ""
     ontology_signals: list[str] = field(default_factory=list)
+    # Deterministic numeric gold: the correct numeric answer computed from
+    # the seed data. The scorer extracts numbers from the agent's response
+    # and marks the scenario correct if any of them is within
+    # ``gold_numeric_tolerance_pct`` percent of this value.
+    gold_numeric_value: float | None = None
+    gold_numeric_tolerance_pct: float = 1.0
+    gold_numeric_description: str = ""
 
 
 @dataclass
@@ -51,6 +58,8 @@ class GoldenAnswer:
     required_scope_tables: list[str] = field(default_factory=list)
     required_relationships: list[str] = field(default_factory=list)
     ontology_signals: list[str] = field(default_factory=list)
+    gold_numeric_value: float | None = None
+    gold_numeric_tolerance_pct: float = 1.0
 
 
 def load_scenarios(path: Path) -> list[Scenario]:
@@ -90,6 +99,8 @@ def golden_answers_from_scenarios(scenarios: list[Scenario]) -> dict[str, Golden
             required_scope_tables=list(s.required_scope_tables),
             required_relationships=list(s.required_relationships),
             ontology_signals=list(s.ontology_signals),
+            gold_numeric_value=s.gold_numeric_value,
+            gold_numeric_tolerance_pct=s.gold_numeric_tolerance_pct,
         )
         for s in scenarios
     }

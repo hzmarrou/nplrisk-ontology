@@ -164,7 +164,10 @@
     "action_policy": "recommend_only",
     "candidate_metrics": ["npe_ratio", "npe_count_ratio"],
     "naked_agent_trap": "Computes count(non_performing) / count(*) instead of exposure-weighted ratio.",
-    "ontology_signals": ["NPE", "non-performing"]
+    "ontology_signals": ["NPE", "non-performing"],
+    "gold_numeric_value": 17.52,
+    "gold_numeric_tolerance_pct": 2.0,
+    "gold_numeric_description": "NPE ratio = sum(exposure of non-performing loans) / sum(exposure of all loans), expressed as a percentage."
   },
   {
     "scenario_id": "Q14",
@@ -176,7 +179,10 @@
     "action_policy": "recommend_only",
     "candidate_metrics": ["total_ead_defaulted", "total_principal_defaulted"],
     "naked_agent_trap": "Sums principal_balance on defaulted loans instead of balance_at_default.",
-    "ontology_signals": ["EAD", "exposure at default"]
+    "ontology_signals": ["EAD", "exposure at default"],
+    "gold_numeric_value": 535587727.72,
+    "gold_numeric_tolerance_pct": 1.0,
+    "gold_numeric_description": "Sum of balance_at_default across loans where default_date IS NOT NULL."
   },
   {
     "scenario_id": "Q15",
@@ -188,7 +194,10 @@
     "action_policy": "recommend_only",
     "candidate_metrics": ["ifrs_stage3_coverage", "all_impaired_coverage"],
     "naked_agent_trap": "Lumps 'ifrs_stage_3_impaired' together with 'other_impaired'.",
-    "ontology_signals": ["IFRS stage 3", "impaired"]
+    "ontology_signals": ["IFRS stage 3", "impaired"],
+    "gold_numeric_value": 17.58,
+    "gold_numeric_tolerance_pct": 2.0,
+    "gold_numeric_description": "sum(principal_balance where ifrs_stage='ifrs_stage_3_impaired') / sum(principal_balance), expressed as a percentage."
   },
   {
     "scenario_id": "Q16",

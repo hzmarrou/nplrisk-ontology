@@ -9,7 +9,7 @@ from nplrisk_bench.scoring import (
     score_response,
     score_signals,
 )
-from nplrisk_bench.scoring.evaluator import infer_response_metadata
+from nplrisk_bench.scoring.evaluator import infer_response_metadata, score_numeric
 
 
 # -- Signal-token scoring ----------------------------------------------------
@@ -92,6 +92,61 @@ def test_guardrail_respected_when_recommending() -> None:
                            action_policy="execute")
     assert score_response(safe, golden).guardrail_respected is True
     assert score_response(unsafe, golden).guardrail_respected is False
+
+
+# -- Numeric gold scoring ----------------------------------------------------
+
+
+def test_score_numeric_percentage_within_tolerance() -> None:
+    assert score_numeric("The NPE ratio is 17.52%.", 17.52, 2.0) is True
+
+
+def test_score_numeric_percentage_outside_tolerance() -> None:
+    # 16.13 (count-based) is more than 2% off 17.52 (exposure-weighted).
+    assert score_numeric("The NPE ratio is 16.13%.", 17.52, 2.0) is False
+
+
+def test_score_numeric_large_currency_value() -> None:
+    # Must tolerate grouping separators and $ sign.
+    assert score_numeric(
+        "Total EAD across defaulted loans is $535,587,727.72.",
+        535_587_727.72,
+        1.0,
+    ) is True
+
+
+def test_score_numeric_wrong_column_value_rejected() -> None:
+    # Agent that summed principal_balance gets a different number; must fail.
+    assert score_numeric(
+        "Total EAD across defaulted loans is $546,085,518.10.",
+        535_587_727.72,
+        1.0,
+    ) is False
+
+
+def test_score_numeric_no_numbers_in_answer() -> None:
+    assert score_numeric("The NPE ratio cannot be computed.", 17.52, 2.0) is False
+
+
+def test_numeric_gold_adds_independent_dimension() -> None:
+    """A correct numeric answer bumps max_score and total_score by 1."""
+    golden = GoldenAnswer(
+        scenario_id="Q13",
+        gold_label="",
+        action_policy="",
+        gold_numeric_value=17.52,
+        gold_numeric_tolerance_pct=2.0,
+    )
+    right = AgentResponse(scenario_id="Q13", agent_type="o",
+                          answer="The NPE ratio is 17.52%.")
+    wrong = AgentResponse(scenario_id="Q13", agent_type="n",
+                          answer="The NPE ratio is 16.13%.")
+    r_right = score_response(right, golden)
+    r_wrong = score_response(wrong, golden)
+    assert r_right.max_score == 1 and r_right.total_score == 1
+    assert r_right.numeric_correct is True
+    assert r_wrong.max_score == 1 and r_wrong.total_score == 0
+    assert r_wrong.numeric_correct is False
 
 
 # -- Heuristic metadata extraction ------------------------------------------

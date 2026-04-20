@@ -5,6 +5,7 @@ from .evaluator import (
     ScoreResult,
     generate_scorecard,
     score_all,
+    score_numeric,
     score_response,
     score_signals,
 )
@@ -26,6 +27,7 @@ __all__ = [
     "load_golden_answers",
     "load_scenarios",
     "score_all",
+    "score_numeric",
     "score_response",
     "score_signals",
 ]
