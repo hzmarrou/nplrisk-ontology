@@ -176,19 +176,23 @@ def _call_once(agent_name: str, question: str, max_wait: int) -> str:
         thread_id=thread.id, role="user", content=question
     )
     run = client.beta.threads.runs.create_and_poll(
-        thread_id=thread.id, assistant_id=assistant.id, poll_interval_ms=2000
+        thread_id=thread.id, assistant_id=assistant.id
     )
     if run.status != "completed":
         return f"<run {run.status}>"
-    msgs = client.beta.threads.messages.list(thread_id=thread.id, order="asc")
-    pieces: list[str] = []
-    for m in msgs.data:
-        if m.role != "assistant":
-            continue
-        for c in m.content:
-            if c.type == "text":
-                pieces.append(c.text.value)
-    return "\\n".join(p for p in pieces if p).strip() or "<empty>"
+
+    # Return only the LATEST assistant message. The Fabric SDK does not always
+    # hand back a pristine thread for each `threads.create()` call, so earlier
+    # answers can still be present; concatenating all of them smears every
+    # prior question's reply into this one. Picking by max(created_at) keeps
+    # this robust even when the list order is undefined.
+    msgs = client.beta.threads.messages.list(thread_id=thread.id)
+    assistant_msgs = [m for m in msgs.data if m.role == "assistant"]
+    if not assistant_msgs:
+        return "<empty>"
+    latest = max(assistant_msgs, key=lambda m: getattr(m, "created_at", 0))
+    pieces = [c.text.value for c in latest.content if c.type == "text"]
+    return "\\n".join(pieces).strip() or "<empty>"
 
 
 # Exceptions that will fail the same way every time — no point retrying.
