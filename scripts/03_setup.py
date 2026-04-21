@@ -304,6 +304,19 @@ def main() -> None:
     parser.add_argument("--cleanup-lh-prefixes", nargs="*",
                         default=["npl_ontology_lh_", "NPL_Risk_lh_", "NPLRisk_Access_Probe_lh_"],
                         help="Auto-created lakehouse name prefixes to delete.")
+    parser.add_argument("--legacy-table-aliases", nargs="*",
+                        default=["npl_enforcement"],
+                        help="Explicit legacy table names from prior "
+                             "mappings that should still be dropped on "
+                             "rerun. The current mapping's tableName "
+                             "values are always dropped regardless.")
+    parser.add_argument("--aggressive-drop", action="store_true",
+                        help="Also drop `<prefix>_<raw_ddl_table>` for "
+                             "every table in the DDL, even if the current "
+                             "mapping does not produce it. Only use this "
+                             "on a workspace you own end-to-end — it can "
+                             "delete tables another project created in a "
+                             "shared lakehouse.")
     args = parser.parse_args()
 
     config = FabricConfig.from_env()
@@ -342,11 +355,17 @@ def main() -> None:
     junction_specs = _junction_tables_to_load(cfg_dict, ddl_tables, entity_tables)
     all_tables = sorted(entity_tables | {j[0] for j in junction_specs})
 
-    # Any `npl_<raw_ddl_table_name>` name is a legal candidate (including
-    # previous-run ghosts like npl_enforcement that the current mapping no
-    # longer produces). Drop everything so we start from a clean slate.
-    stale_tables = {f"{cfg_dict.get('tablePrefix','npl')}_{raw}" for raw in ddl_tables}
-    drop_targets = sorted(set(all_tables) | stale_tables)
+    # Drop only tables we own:
+    #   * every table the current mapping produces (entities + junctions)
+    #   * explicit legacy aliases from --legacy-table-aliases
+    #   * if --aggressive-drop, every `<prefix>_<raw_ddl_table>`. That is
+    #     unsafe in a shared lakehouse and requires an explicit opt-in.
+    owned_tables: set[str] = set(all_tables) | set(args.legacy_table_aliases)
+    if args.aggressive_drop:
+        owned_tables |= {
+            f"{cfg_dict.get('tablePrefix','npl')}_{raw}" for raw in ddl_tables
+        }
+    drop_targets = sorted(owned_tables)
 
     print(f"\n[5] Opening Livy session...")
     with LivyClient(config) as livy:
