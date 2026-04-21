@@ -110,7 +110,11 @@ def poll_lro(
     retry_after = int(response.headers.get("Retry-After", poll_interval))
     success_set = set(success_states)
     failure_set = set(failure_states)
-    deadline = time.time() + max_wait_seconds
+    started_at = time.time()
+    deadline = started_at + max_wait_seconds
+
+    last_printed_status: str | None = None
+    last_status_change = started_at
 
     while True:
         if time.time() >= deadline:
@@ -123,6 +127,18 @@ def poll_lro(
 
         body = _poll_once(config, operation_url, network_retries)
         status = body.get("status", "Unknown")
+
+        # Print every status transition, plus a heartbeat every ~60 s
+        # so an operator knows the poll isn't wedged during long runs.
+        now = time.time()
+        elapsed = int(now - started_at)
+        if status != last_printed_status:
+            print(f"  [{debug_label}] {status} (t+{elapsed}s)")
+            last_printed_status = status
+            last_status_change = now
+        elif now - last_status_change >= 60:
+            print(f"  [{debug_label}] still {status} (t+{elapsed}s)")
+            last_status_change = now
 
         if status in success_set:
             if fetch_result:
