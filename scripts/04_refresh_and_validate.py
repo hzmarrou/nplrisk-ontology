@@ -29,15 +29,23 @@ from nplrisk_bench.fabric_client.graph_api import GraphClient  # noqa: E402
 
 
 def _find_graph_for_ontology(gc: GraphClient, ontology_name: str) -> dict | None:
-    matching = []
-    for g in gc.list_graph_models():
-        name = g.get("displayName", "")
-        if ontology_name in name or name.startswith(ontology_name):
-            matching.append(g)
-    if not matching:
-        return None
-    matching.sort(key=lambda g: g.get("displayName", ""))
-    return matching[0]
+    """Resolve the graph model that belongs to ``ontology_name``.
+
+    Fabric auto-provisions a graph model whose ``displayName`` matches
+    the ontology's ``displayName`` exactly. A previous implementation
+    used substring + startswith matching, which silently picked the
+    wrong model in a crowded workspace (e.g. ``NPL_Risk_Other`` would
+    also match ``NPL_Risk``). Exact-match only; multiple matches fail
+    hard so the operator can disambiguate with ``--graph-id``.
+    """
+    matches = [g for g in gc.list_graph_models()
+               if g.get("displayName", "") == ontology_name]
+    if len(matches) > 1:
+        raise RuntimeError(
+            f"Multiple graph models named {ontology_name!r}: "
+            f"{[g['id'] for g in matches]}. Pass --graph-id to pick one."
+        )
+    return matches[0] if matches else None
 
 
 def _try_refresh(gc: GraphClient, graph_id: str, attempts: int = 2, pause: int = 60) -> dict:
