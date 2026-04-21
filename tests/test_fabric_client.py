@@ -19,6 +19,9 @@ import requests
 
 from nplrisk_bench.fabric_client import auth
 from nplrisk_bench.fabric_client.config import FabricConfig
+from nplrisk_bench.fabric_client.data_agent_api import DataAgentClient
+from nplrisk_bench.fabric_client.graph_api import GraphClient
+from nplrisk_bench.fabric_client.lro import FabricLROError, poll_lro
 from nplrisk_bench.fabric_client.ontology_api import OntologyClient
 
 
@@ -197,3 +200,118 @@ def test_lro_retries_transient_5xx_on_poll(stub_headers) -> None:
         with patch("nplrisk_bench.fabric_client.lro.time.sleep"):
             body = client._handle_lro(accept)
     assert body == {"ok": True}
+
+
+# -- Extended LRO contract (F11): graph refresh + data-agent shape ---------
+
+
+def test_data_agent_handle_lro_uses_shared_poller(stub_headers) -> None:
+    """The DataAgentClient must go through poll_lro and honour the
+    same Location / Succeeded / result contract as the ontology client."""
+    client = DataAgentClient(_cfg())
+    accept = _lro_accept_response(retry_after=1)
+
+    succeeded = MagicMock()
+    succeeded.status_code = 200
+    succeeded.headers = {}
+    succeeded.json.return_value = {"status": "Succeeded"}
+    succeeded.raise_for_status.return_value = None
+
+    result_resp = MagicMock()
+    result_resp.status_code = 200
+    result_resp.json.return_value = {"definition": "from-result"}
+
+    with patch("nplrisk_bench.fabric_client.lro.requests.get",
+               side_effect=[succeeded, result_resp]):
+        with patch("nplrisk_bench.fabric_client.lro.time.sleep"):
+            body = client._poll_lro(accept)
+    assert body == {"definition": "from-result"}
+
+
+def test_graph_refresh_uses_completed_success_state(stub_headers) -> None:
+    """GraphClient.refresh uses a job-instance LRO whose success state
+    is 'Completed' (not 'Succeeded') and which has no /result tail."""
+    client = GraphClient(_cfg())
+
+    post_resp = MagicMock()
+    post_resp.status_code = 202
+    post_resp.headers = {"Location": "https://fabric/jobs/abc", "Retry-After": "1"}
+
+    completed = MagicMock()
+    completed.status_code = 200
+    completed.headers = {}
+    completed.json.return_value = {"status": "Completed", "rootActivityId": "a-1"}
+    completed.raise_for_status.return_value = None
+
+    with patch("nplrisk_bench.fabric_client.graph_api.requests.post",
+               return_value=post_resp):
+        with patch("nplrisk_bench.fabric_client.lro.requests.get",
+                   return_value=completed):
+            with patch("nplrisk_bench.fabric_client.lro.time.sleep"):
+                body = client.refresh("g-1", poll_interval=1)
+
+    assert body.get("status") == "Completed"
+
+
+def test_graph_refresh_raises_on_job_failed(stub_headers) -> None:
+    """Job-instance Failed/Cancelled must surface the failureReason
+    message just like the ontology client surfaces error.errorCode."""
+    client = GraphClient(_cfg())
+
+    post_resp = MagicMock()
+    post_resp.status_code = 202
+    post_resp.headers = {"Location": "https://fabric/jobs/abc", "Retry-After": "1"}
+
+    failed = MagicMock()
+    failed.status_code = 200
+    failed.headers = {}
+    failed.json.return_value = {
+        "status": "Failed",
+        "failureReason": {"errorCode": "BindingError", "message": "cannot bind"},
+    }
+    failed.raise_for_status.return_value = None
+
+    with patch("nplrisk_bench.fabric_client.graph_api.requests.post",
+               return_value=post_resp):
+        with patch("nplrisk_bench.fabric_client.lro.requests.get",
+                   return_value=failed):
+            with patch("nplrisk_bench.fabric_client.lro.time.sleep"):
+                with pytest.raises(FabricLROError, match="BindingError"):
+                    client.refresh("g-1", poll_interval=1)
+
+
+def test_poll_lro_honours_per_poll_retry_after(stub_headers) -> None:
+    """Retry-After from a subsequent poll must update the caller's wait,
+    not just the initial 202 header. We assert by counting sleep() calls
+    with the second response's value."""
+    accept = MagicMock()
+    accept.status_code = 202
+    accept.headers = {"Location": "https://fabric/ops/abc", "Retry-After": "1"}
+
+    in_progress = MagicMock()
+    in_progress.status_code = 200
+    in_progress.headers = {"Retry-After": "7"}   # server says slow down
+    in_progress.json.return_value = {"status": "InProgress"}
+    in_progress.raise_for_status.return_value = None
+
+    succeeded = MagicMock()
+    succeeded.status_code = 200
+    succeeded.headers = {}
+    succeeded.json.return_value = {"status": "Succeeded"}
+    succeeded.raise_for_status.return_value = None
+
+    result_resp = MagicMock()
+    result_resp.status_code = 200
+    result_resp.json.return_value = {"ok": True}
+
+    sleep_calls: list[int] = []
+    with patch("nplrisk_bench.fabric_client.lro.requests.get",
+               side_effect=[in_progress, succeeded, result_resp]):
+        with patch("nplrisk_bench.fabric_client.lro.time.sleep",
+                   side_effect=lambda n: sleep_calls.append(n)):
+            body = poll_lro(_cfg(), accept, poll_interval=1, max_wait_seconds=120)
+    assert body == {"ok": True}
+    # First sleep uses initial Retry-After=1, second sleep picks up the
+    # updated Retry-After=7 from the in-progress poll response.
+    assert sleep_calls[0] == 1
+    assert sleep_calls[1] == 7
