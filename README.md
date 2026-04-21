@@ -13,7 +13,7 @@ on a curated scenario benchmark.
 
 - A real OWL/RDF ontology (NPLO — Non Performing Loan Ontology, aligned
   to EBA NPL Data Templates) parsed into a Fabric ontology
-- 12 entities, 13 relationships, 14 Lakehouse Delta tables, populated
+- 13 entities, 17 relationships, 14 Lakehouse Delta tables, populated
   from ~7.6 k rows of realistic sample data
 - 11 GQL competency queries run through
   `scripts/04_refresh_and_validate.py`
