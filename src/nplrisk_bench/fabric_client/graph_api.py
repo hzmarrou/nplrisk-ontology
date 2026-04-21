@@ -14,6 +14,7 @@ import requests
 
 from .auth import get_headers
 from .config import FabricConfig
+from .lro import poll_lro
 
 
 class GraphClient:
@@ -36,27 +37,13 @@ class GraphClient:
         return url
 
     def _handle_lro(self, response: requests.Response, poll_interval: int = 5) -> dict | None:
-        if response.status_code != 202:
-            return None
-        operation_url = response.headers.get("Location")
-        retry_after = int(response.headers.get("Retry-After", poll_interval))
-        while True:
-            time.sleep(retry_after)
-            poll = requests.get(operation_url, headers=get_headers(self.config))
-            poll.raise_for_status()
-            body = poll.json()
-            status = body.get("status", "Unknown")
-            if status == "Succeeded":
-                result_resp = requests.get(f"{operation_url}/result", headers=get_headers(self.config))
-                if result_resp.status_code == 200:
-                    return result_resp.json()
-                return body
-            if status in ("Failed", "Cancelled"):
-                error = body.get("error", {})
-                raise RuntimeError(
-                    f"LRO {status}: {error.get('errorCode', 'unknown')} - "
-                    f"{error.get('message', body)}"
-                )
+        """Thin wrapper over the shared :func:`poll_lro`."""
+        return poll_lro(
+            self.config,
+            response,
+            poll_interval=poll_interval,
+            debug_label="Graph LRO",
+        )
 
     def list_graph_models(self) -> list[dict]:
         results: list[dict] = []
@@ -114,14 +101,28 @@ class GraphClient:
         response.raise_for_status()
         return response.json()
 
-    def refresh(self, graph_id: str, *, wait: bool = True, poll_interval: int = 15) -> dict:
+    def refresh(
+        self,
+        graph_id: str,
+        *,
+        wait: bool = True,
+        poll_interval: int = 15,
+        max_wait_seconds: int = 1800,
+    ) -> dict:
         """Trigger an on-demand graph refresh.
 
         Uses the generic ``jobs/instances`` endpoint with
         ``jobType=RefreshGraph``. When Fabric has queued overlapping
-        refresh jobs the platform can auto-cancel them in under a second;
-        callers should wait and retry a single clean refresh if they see
-        ``status=Cancelled`` with no ``failureReason``.
+        refresh jobs the platform can auto-cancel them in under a
+        second; callers should wait and retry a single clean refresh if
+        they see ``status=Cancelled`` with no ``failureReason``.
+
+        The poll loop shares the wall-clock cap / Retry-After / 5xx
+        retry guarantees from :func:`poll_lro`, but the job-instance
+        schema uses ``status=Completed`` (not ``Succeeded``) as its
+        terminal success state and does not expose a ``/result``
+        endpoint, so we call poll_lro with the job-instance success set
+        and ``fetch_result=False``.
         """
         url = self._url(graph_id, "jobs/instances")
         response = requests.post(
@@ -132,24 +133,21 @@ class GraphClient:
         if response.status_code == 200:
             return {"status": "Completed"}
         if response.status_code == 202:
-            location = response.headers.get("Location")
-            retry_after = int(response.headers.get("Retry-After", poll_interval))
             if not wait:
-                return {"status": "Accepted", "location": location}
-            while True:
-                time.sleep(retry_after)
-                poll = requests.get(location, headers=get_headers(self.config))
-                poll.raise_for_status()
-                body = poll.json()
-                status = body.get("status", "Unknown")
-                if status in ("Completed", "Failed", "Cancelled"):
-                    if body.get("failureReason"):
-                        raise RuntimeError(
-                            f"Refresh {status}: "
-                            f"{body['failureReason'].get('message', body['failureReason'])}"
-                        )
-                    return body
-                retry_after = min(retry_after, 15)
+                return {
+                    "status": "Accepted",
+                    "location": response.headers.get("Location"),
+                }
+            return poll_lro(
+                self.config,
+                response,
+                poll_interval=poll_interval,
+                max_wait_seconds=max_wait_seconds,
+                success_states=("Completed",),
+                failure_states=("Failed", "Cancelled"),
+                fetch_result=False,
+                debug_label="Graph refresh",
+            ) or {"status": "Completed"}
         response.raise_for_status()
         return {}
 

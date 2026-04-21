@@ -14,6 +14,7 @@ import requests
 
 from .auth import get_headers
 from .config import FabricConfig
+from .lro import poll_lro
 
 
 class DataAgentClient:
@@ -36,27 +37,13 @@ class DataAgentClient:
         return url
 
     def _poll_lro(self, response: requests.Response, poll_interval: int = 5) -> dict | None:
-        if response.status_code != 202:
-            return None
-        operation_url = response.headers.get("Location")
-        retry_after = int(response.headers.get("Retry-After", poll_interval))
-        while True:
-            time.sleep(retry_after)
-            poll = requests.get(operation_url, headers=get_headers(self.config))
-            poll.raise_for_status()
-            body = poll.json()
-            status = body.get("status", "Unknown")
-            if status == "Succeeded":
-                result_resp = requests.get(f"{operation_url}/result", headers=get_headers(self.config))
-                if result_resp.status_code == 200:
-                    return result_resp.json()
-                return body
-            if status in ("Failed", "Cancelled"):
-                error = body.get("error", {})
-                raise RuntimeError(
-                    f"LRO {status}: {error.get('errorCode', 'unknown')} - "
-                    f"{error.get('message', body)}"
-                )
+        """Thin wrapper over the shared :func:`poll_lro`."""
+        return poll_lro(
+            self.config,
+            response,
+            poll_interval=poll_interval,
+            debug_label="DataAgent LRO",
+        )
 
     def list_data_agents(self) -> list[dict]:
         results: list[dict] = []

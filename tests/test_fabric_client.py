@@ -103,8 +103,8 @@ def test_fetch_token_surfaces_4xx_immediately() -> None:
 
 @pytest.fixture
 def stub_headers():
-    """Stub get_headers so LRO tests don't hit the real AAD endpoint."""
-    with patch("nplrisk_bench.fabric_client.ontology_api.get_headers",
+    """Stub get_headers in the shared LRO module so tests don't hit AAD."""
+    with patch("nplrisk_bench.fabric_client.lro.get_headers",
                return_value={"Authorization": "Bearer test-token"}):
         yield
 
@@ -144,10 +144,10 @@ def test_lro_times_out(stub_headers) -> None:
 
     times = iter([0, 0, 0] + [9999] * 20)
 
-    with patch("nplrisk_bench.fabric_client.ontology_api.requests.get",
+    with patch("nplrisk_bench.fabric_client.lro.requests.get",
                return_value=running_forever):
-        with patch("nplrisk_bench.fabric_client.ontology_api.time.sleep"):
-            with patch("nplrisk_bench.fabric_client.ontology_api.time.time",
+        with patch("nplrisk_bench.fabric_client.lro.time.sleep"):
+            with patch("nplrisk_bench.fabric_client.lro.time.time",
                        side_effect=lambda: next(times)):
                 with pytest.raises(TimeoutError):
                     client._handle_lro(accept, max_wait_seconds=60)
@@ -165,9 +165,9 @@ def test_lro_raises_on_failed_status(stub_headers) -> None:
     }
     failed.raise_for_status.return_value = None
 
-    with patch("nplrisk_bench.fabric_client.ontology_api.requests.get",
+    with patch("nplrisk_bench.fabric_client.lro.requests.get",
                return_value=failed):
-        with patch("nplrisk_bench.fabric_client.ontology_api.time.sleep"):
+        with patch("nplrisk_bench.fabric_client.lro.time.sleep"):
             with pytest.raises(RuntimeError, match="ValidationError"):
                 client._handle_lro(accept)
 
@@ -192,8 +192,8 @@ def test_lro_retries_transient_5xx_on_poll(stub_headers) -> None:
     result_resp.status_code = 200
     result_resp.json.return_value = {"ok": True}
 
-    with patch("nplrisk_bench.fabric_client.ontology_api.requests.get",
+    with patch("nplrisk_bench.fabric_client.lro.requests.get",
                side_effect=[flaky, succeeded, result_resp]):
-        with patch("nplrisk_bench.fabric_client.ontology_api.time.sleep"):
+        with patch("nplrisk_bench.fabric_client.lro.time.sleep"):
             body = client._handle_lro(accept)
     assert body == {"ok": True}
