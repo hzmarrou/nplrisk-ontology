@@ -90,13 +90,39 @@ def score_numeric(answer: str, gold_value: float, tolerance_pct: float) -> bool:
     return any(abs(n - gold_value) <= threshold for n in numbers)
 
 
+def normalize_text(s: str) -> str:
+    """Fold underscores / hyphens / slashes / whitespace to a single space.
+
+    Keeps the signal-token match resilient to formatting differences —
+    ``write_off_flag`` matches ``write-off flag`` matches ``write off
+    flag``. The notebook uses the same normalization so the lexical
+    verdict is identical whether it is computed in Fabric or in
+    scripts/06_score.py.
+    """
+    s = (s or "").lower()
+    s = re.sub(r"[_\-/]+", " ", s)
+    s = re.sub(r"\s+", " ", s)
+    return s.strip()
+
+
 def score_signals(answer: str, signals: list[str]) -> tuple[bool, list[str], list[str]]:
-    """Return (all_matched, matched, missing) for a must-mention token list."""
+    """Return (all_matched, matched, missing) for a must-mention token list.
+
+    Empty ``signals`` returns ``(True, [], [])`` — a must-mention list of
+    zero tokens is trivially satisfied. Callers that want empty signals
+    to mean "no verdict" should not invoke this helper for those
+    scenarios.
+    """
     if not signals:
         return True, [], []
-    lower = answer.lower()
-    matched = [s for s in signals if s.lower() in lower]
-    missing = [s for s in signals if s.lower() not in lower]
+    norm_answer = normalize_text(answer)
+    matched: list[str] = []
+    missing: list[str] = []
+    for s in signals:
+        if normalize_text(s) in norm_answer:
+            matched.append(s)
+        else:
+            missing.append(s)
     return len(missing) == 0, matched, missing
 
 

@@ -6,6 +6,7 @@ from nplrisk_bench.scoring import (
     AgentResponse,
     GoldenAnswer,
     generate_scorecard,
+    normalize_text,
     score_response,
     score_signals,
 )
@@ -18,6 +19,25 @@ from nplrisk_bench.scoring.evaluator import infer_response_metadata, score_numer
 def test_score_signals_empty_list_is_true() -> None:
     ok, matched, missing = score_signals("anything", [])
     assert ok is True and matched == [] and missing == []
+
+
+def test_normalize_text_folds_separators() -> None:
+    # Contract: the notebook's inline _normalize and the scorer's
+    # normalize_text agree on how to fold separators, so
+    # ``write_off_flag`` / ``write-off flag`` / ``write off flag`` all
+    # compare equal.
+    assert normalize_text("write_off_flag") == "write off flag"
+    assert normalize_text("write-off  flag") == "write off flag"
+    assert normalize_text("IFRS/stage-3_impaired") == "ifrs stage 3 impaired"
+
+
+def test_score_signals_separator_normalization() -> None:
+    ok, matched, _ = score_signals(
+        "There are 15 loans with the write-off flag set to TRUE.",
+        ["write_off_flag", "loan"],
+    )
+    assert ok is True
+    assert set(matched) == {"write_off_flag", "loan"}
 
 
 def test_score_signals_matches_case_insensitively() -> None:
