@@ -41,7 +41,6 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
-from nplrisk_bench.fabric_client.lakehouse_sync import entity_name_to_table  # noqa: E402
 from nplrisk_bench.scoring import (  # noqa: E402
     AgentResponse,
     generate_scorecard,
@@ -113,10 +112,11 @@ def main() -> None:
     golden_answers = golden_answers_from_scenarios(scenarios)
 
     cfg = json.loads(args.config.read_text(encoding="utf-8")) if args.config.exists() else {}
-    prefix = cfg.get("tablePrefix", "npl")
+    # Use the canonical tableName recorded on each entity. Recomputing from
+    # the entity name would silently miswire any class whose DDL table does
+    # not share its snake_case name (e.g. Enforcement -> enforcement_event).
     known_tables = [
-        f"{prefix}_{entity_name_to_table(e['name'])}"
-        for e in cfg.get("entities", [])
+        e["tableName"] for e in cfg.get("entities", []) if e.get("tableName")
     ]
     known_relationships = [r["name"] for r in cfg.get("relationships", [])]
 

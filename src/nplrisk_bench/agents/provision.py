@@ -74,14 +74,21 @@ def _find_item_by_id(items: list[dict], item_id: str) -> dict | None:
 # -- Datasource payload builders --------------------------------------------
 
 def _lakehouse_ds_elements(ontology_config: dict, selected_tables: Iterable[str]) -> list[dict]:
-    """Build the tree of table + column elements for the lakehouse datasource."""
-    prefix = ontology_config.get("tablePrefix", "npl")
+    """Build the tree of table + column elements for the lakehouse datasource.
 
-    # Build {table_name: [{name, type}, ...]} from the ontology config
+    Uses the canonical ``tableName`` recorded on each entity by the mapping
+    step, NOT a recomputation from the entity name. An entity like
+    ``Enforcement`` is backed by ``npl_enforcement_event`` and the
+    snake_case heuristic would silently miswire it.
+    """
     entities: dict[str, list[dict]] = {}
     for entity_cfg in ontology_config["entities"]:
-        from ..fabric_client.lakehouse_sync import entity_name_to_table
-        table_name = f"{prefix}_{entity_name_to_table(entity_cfg['name'])}"
+        table_name = entity_cfg.get("tableName")
+        if not table_name:
+            raise ValueError(
+                f"Entity '{entity_cfg.get('name', '?')}' is missing tableName; "
+                f"rerun scripts/02_build_mapping.py to regenerate the config."
+            )
         entities[table_name] = [
             {
                 "id": str(uuid.uuid4()),
