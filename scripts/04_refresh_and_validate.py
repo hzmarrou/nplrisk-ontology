@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 import time
 from pathlib import Path
@@ -28,22 +29,37 @@ from nplrisk_bench.fabric_client import FabricConfig  # noqa: E402
 from nplrisk_bench.fabric_client.graph_api import GraphClient  # noqa: E402
 
 
+_GRAPH_SUFFIX_RE = re.compile(r"^_graph_[0-9a-f]+$", re.IGNORECASE)
+
+
 def _find_graph_for_ontology(gc: GraphClient, ontology_name: str) -> dict | None:
     """Resolve the graph model that belongs to ``ontology_name``.
 
-    Fabric auto-provisions a graph model whose ``displayName`` matches
-    the ontology's ``displayName`` exactly. A previous implementation
-    used substring + startswith matching, which silently picked the
-    wrong model in a crowded workspace (e.g. ``NPL_Risk_Other`` would
-    also match ``NPL_Risk``). Exact-match only; multiple matches fail
-    hard so the operator can disambiguate with ``--graph-id``.
+    Fabric auto-provisions the graph with one of two display-name
+    shapes:
+
+      * exact match: ``NPL_Risk``
+      * suffixed:    ``NPL_Risk_graph_<32-hex-id>``
+
+    Accept both; reject anything else (avoids matching
+    ``NPL_Risk_Other`` or similar unrelated items). Multiple matches
+    still fail hard and require ``--graph-id``.
     """
-    matches = [g for g in gc.list_graph_models()
-               if g.get("displayName", "") == ontology_name]
+    matches = []
+    for g in gc.list_graph_models():
+        name = g.get("displayName", "")
+        if name == ontology_name:
+            matches.append(g)
+            continue
+        if name.startswith(ontology_name):
+            tail = name[len(ontology_name):]
+            if _GRAPH_SUFFIX_RE.match(tail):
+                matches.append(g)
     if len(matches) > 1:
         raise RuntimeError(
-            f"Multiple graph models named {ontology_name!r}: "
-            f"{[g['id'] for g in matches]}. Pass --graph-id to pick one."
+            f"Multiple graph models matching {ontology_name!r}: "
+            f"{[(g.get('displayName'), g['id']) for g in matches]}. "
+            f"Pass --graph-id to pick one."
         )
     return matches[0] if matches else None
 
